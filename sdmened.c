@@ -115,7 +115,10 @@ static void killword(DMenu *dm) {
 static void run(DMenu *dm, int out_fd) {
   XEvent ev; char buf[32]; KeySym ks;
   matchanddraw(dm); XFlush(dm->dpy); XSync(dm->dpy, False);
-  XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
+  for (int g = 0; g < 10; g++) {
+    if (XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess) break;
+    usleep(10000);
+  }
   while (1) {
     XNextEvent(dm->dpy, &ev);
     if (ev.type == Expose) { draw(dm); XFlush(dm->dpy); continue; }
@@ -244,7 +247,12 @@ static void create_window(DMenu *dm) {
   dm->gc = XCreateGC(dm->dpy,dm->win,0,NULL); XSetFont(dm->dpy,dm->gc,dm->xfont->fid); XMapRaised(dm->dpy,dm->win);
 }
 
-static void destroy_window(DMenu *dm) { XFreeGC(dm->dpy, dm->gc); XDestroyWindow(dm->dpy, dm->win); }
+static void destroy_window(DMenu *dm) {
+  XUnmapWindow(dm->dpy, dm->win);
+  XSync(dm->dpy, False);
+  XFreeGC(dm->dpy, dm->gc);
+  XDestroyWindow(dm->dpy, dm->win);
+}
 
 static int cmpstr(const void *a, const void *b) { return strcmp(*(const char**)a, *(const char**)b); }
 
