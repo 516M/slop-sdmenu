@@ -19,13 +19,13 @@
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
-#define PAD 6
-#define BORDER 1
+#define PAD 2
+#define BORDER 0
 #define SOCK_PATH "/tmp/sdmened.sock"
 #define ICON_SIZE 24
 
 static char *fontstr = "9x15";
-static char *prompt = "> ";
+static char *prompt = ">";
 static char *normbg = "#0d0d0d";
 static char *normfg = "#c8c8c8";
 static char *selbg  = "#2a2a2a";
@@ -169,8 +169,7 @@ static int init_x11(DMenu *dm) {
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "8x13");
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "fixed");
   dm->fw = dm->xfont->max_bounds.width; dm->fh = dm->xfont->ascent + dm->xfont->descent;
-  dm->BH = dm->fh + 6;
-  if (dm->BH < 24) dm->BH = 24;
+  dm->BH = dm->fh;
   dm->cmap = DefaultColormap(dm->dpy, dm->scr);
   XColor xc, u; XAllocNamedColor(dm->dpy, dm->cmap, normfg, &xc, &u); dm->normfg_p = xc.pixel;
   XAllocNamedColor(dm->dpy, dm->cmap, normbg, &xc, &u); dm->normbg_p = xc.pixel;
@@ -241,11 +240,11 @@ static void create_window(DMenu *dm) {
   else { dm->basex=0; dm->basey=0; dm->monh=sh; }
   dm->width = mw;
   dm->maxvis = lines>0?lines:0; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
-  dm->height = dm->BH + dm->maxvis*dm->BH + BORDER*2;
+  dm->height = dm->BH + dm->maxvis*dm->BH;
   int x = dm->basex+(mw-dm->width)/2, y = topbar?dm->basey:dm->basey+dm->monh-dm->height;
   if (info) XFree(info);
   XSetWindowAttributes wa={0}; wa.override_redirect=1; wa.border_pixel=dm->normfg_p; wa.background_pixel=dm->normbg_p; wa.event_mask=ExposureMask|KeyPressMask;
-  dm->win = XCreateWindow(dm->dpy,RootWindow(dm->dpy,dm->scr),x,y,dm->width,dm->height,BORDER,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBorderPixel|CWBackPixel|CWEventMask,&wa);
+  dm->win = XCreateWindow(dm->dpy,RootWindow(dm->dpy,dm->scr),x,y,dm->width,dm->height,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBorderPixel|CWBackPixel|CWEventMask,&wa);
   dm->gc = XCreateGC(dm->dpy,dm->win,0,NULL); XSetFont(dm->dpy,dm->gc,dm->xfont->fid); XMapRaised(dm->dpy,dm->win);
 }
 
