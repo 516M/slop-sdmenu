@@ -467,11 +467,17 @@ static void create_window(DMenu *dm) {
   int x = dm->basex;
   int y = topbar ? dm->basey : dm->basey + dm->monh - dm->height;
 
-  dm->win = XCreateSimpleWindow(dm->dpy, RootWindow(dm->dpy, dm->scr),
-    x, y, dm->width, dm->height, BORDER, dm->normfg_p, dm->normbg_p);
+  XSetWindowAttributes wa = {0};
+  wa.override_redirect = True;
+  wa.border_pixel = dm->normfg_p;
+  wa.background_pixel = dm->normbg_p;
+  wa.event_mask = ExposureMask | KeyPressMask;
+  dm->win = XCreateWindow(dm->dpy, RootWindow(dm->dpy, dm->scr),
+    x, y, dm->width, dm->height, BORDER,
+    CopyFromParent, InputOutput, CopyFromParent,
+    CWOverrideRedirect | CWBorderPixel | CWBackPixel | CWEventMask, &wa);
   dm->gc = XCreateGC(dm->dpy, dm->win, 0, NULL);
   XSetFont(dm->dpy, dm->gc, dm->xfont->fid);
-  XSelectInput(dm->dpy, dm->win, ExposureMask | KeyPressMask);
   XMapRaised(dm->dpy, dm->win);
 }
 
