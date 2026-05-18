@@ -50,9 +50,11 @@ typedef struct { Pixmap pixmap; int loaded; } Icon;
 
 typedef struct {
   char **items; int nitems; int *matches; int nmatches;
+  char **paths;
   char text[INP_MAX]; int cursor; int sel; int top;
   int width; int height; int promptw; int maxvis;
   int fw, fh, BH; Icon *icons;
+  int rofi_mode;
   Display *dpy; Window win; GC gc;
   XftFont *xfont; XftDraw *xdraw;
   XftColor normfg_c, normbg_c, selfg_c, selbg_c;
@@ -102,6 +104,10 @@ static void draw(DMenu *dm) {
     if (dm->icons && dm->icons[dm->matches[idx]].loaded)
       XCopyArea(dm->dpy, dm->icons[dm->matches[idx]].pixmap, dm->win, dm->gc, 0, 0, ICON_SIZE, ICON_SIZE, PAD, y + (dm->BH - ICON_SIZE) / 2);
     XftDrawStringUtf8(dm->xdraw, (idx==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, to, ty, (const FcChar8*)dm->items[dm->matches[idx]], strlen(dm->items[dm->matches[idx]]));
+    if (dm->rofi_mode && dm->paths && dm->paths[dm->matches[idx]]) {
+      int pw = textw(dm, dm->paths[dm->matches[idx]], strlen(dm->paths[dm->matches[idx]]));
+      XftDrawStringUtf8(dm->xdraw, (idx==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, dm->width - pw - PAD, ty, (const FcChar8*)dm->paths[dm->matches[idx]], strlen(dm->paths[dm->matches[idx]]));
+    }
   }
 }
 
@@ -117,6 +123,8 @@ static void killword(DMenu *dm) {
 
 static void run(DMenu *dm, int out_fd) {
   XEvent ev; char buf[32]; KeySym ks;
+  Window prev_focus; int prev_revert;
+  XGetInputFocus(dm->dpy, &prev_focus, &prev_revert);
   matchanddraw(dm); XFlush(dm->dpy); XSync(dm->dpy, False);
   for (int g = 0; g < 10; g++) {
     if (XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess) break;
@@ -159,6 +167,8 @@ static void run(DMenu *dm, int out_fd) {
   }
 done:
   XUngrabKeyboard(dm->dpy, CurrentTime); XSync(dm->dpy, False);
+  if (prev_focus != None && prev_focus != PointerRoot)
+    XSetInputFocus(dm->dpy, prev_focus, RevertToParent, CurrentTime);
   if (dm->sel >= 0 && dm->sel < dm->nmatches) write(out_fd, dm->items[dm->matches[dm->sel]], strlen(dm->items[dm->matches[dm->sel]]) + 1);
   if (benchmark) fprintf(stderr, "  %3ld ms  total match time\n", matchtime);
 }
@@ -246,6 +256,7 @@ static void create_window(DMenu *dm) {
   else { dm->basex=0; dm->basey=0; dm->monh=sh; }
   dm->width = mw;
   dm->maxvis = lines>0?lines:0; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
+  if (dm->rofi_mode && dm->BH < ICON_SIZE + 2) dm->BH = ICON_SIZE + 2;
   dm->height = dm->BH + dm->maxvis*dm->BH;
   int x = dm->basex+(mw-dm->width)/2, y = topbar?dm->basey:dm->basey+dm->monh-dm->height;
   if (info) XFree(info);
@@ -264,11 +275,31 @@ static void destroy_window(DMenu *dm) {
 
 static int cmpstr(const void *a, const void *b) { return strcmp(*(const char**)a, *(const char**)b); }
 
+static void sort_items(DMenu *dm) {
+  if (dm->nitems == 0) return;
+  // Sort indices
+  int *idx = malloc(dm->nitems * sizeof(int));
+  for (int i = 0; i < dm->nitems; i++) idx[i] = i;
+  for (int i = 0; i < dm->nitems; i++)
+    for (int j = i+1; j < dm->nitems; j++)
+      if (strcmp(dm->items[idx[i]], dm->items[idx[j]]) > 0) { int t=idx[i]; idx[i]=idx[j]; idx[j]=t; }
+  char **nitems = malloc(dm->nitems * sizeof(char*));
+  char **npaths = dm->paths ? malloc(dm->nitems * sizeof(char*)) : NULL;
+  for (int i = 0; i < dm->nitems; i++) {
+    nitems[i] = dm->items[idx[i]];
+    if (npaths) npaths[i] = dm->paths[idx[i]];
+  }
+  free(dm->items); dm->items = nitems;
+  if (npaths) { free(dm->paths); dm->paths = npaths; }
+  free(idx);
+}
+
 static void gen_items(DMenu *dm) {
   char *path = getenv("PATH"); if(!path)return;
   char b[4096]; strncpy(b,path,sizeof(b)-1); b[sizeof(b)-1]=0; char *d=b;
-  while(d&&*d){char*n=strchr(d,':');if(n)*n++=0; DIR*dir=opendir(d);if(dir){struct dirent*e;while((e=readdir(dir))&&dm->nitems<MAX_ITEMS){if(e->d_name[0]=='.')continue;char f[4096];snprintf(f,sizeof(f),"%s/%s",d,e->d_name);struct stat st;if(stat(f,&st)==0&&S_ISREG(st.st_mode)&&(st.st_mode&S_IXUSR)){int dp=0;for(int i=0;i<dm->nitems;i++)if(strcmp(dm->items[i],e->d_name)==0){dp=1;break;}if(!dp)dm->items[dm->nitems++]=strdup(e->d_name);}}closedir(dir);}d=n;}
-  qsort(dm->items,dm->nitems,sizeof(char*),cmpstr);
+  dm->paths = calloc(MAX_ITEMS, sizeof(char*));
+  while(d&&*d){char*n=strchr(d,':');if(n)*n++=0; DIR*dir=opendir(d);if(dir){struct dirent*e;while((e=readdir(dir))&&dm->nitems<MAX_ITEMS){if(e->d_name[0]=='.')continue;char f[4096];snprintf(f,sizeof(f),"%s/%s",d,e->d_name);struct stat st;if(stat(f,&st)==0&&S_ISREG(st.st_mode)&&(st.st_mode&S_IXUSR)){int dp=0;for(int i=0;i<dm->nitems;i++)if(strcmp(dm->items[i],e->d_name)==0){dp=1;break;}if(!dp){dm->items[dm->nitems]=strdup(e->d_name);char*rp=realpath(f,NULL);dm->paths[dm->nitems]=rp?rp:strdup(f);dm->nitems++;}}}closedir(dir);}d=n;}
+  sort_items(dm);
 }
 
 static int stdin_has_data(void) { struct stat st; fstat(0,&st); return !S_ISCHR(st.st_mode); }
@@ -304,7 +335,11 @@ static void daemon_serve(DMenu *dm) {
   for(;;){
     int cfd=accept(daemon_sfd,NULL,NULL);
     if(cfd<0) continue;
+    char mode_byte = 'd';
+    read(cfd, &mode_byte, 1);
+    dm->rofi_mode = (mode_byte == 'r');
     dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;
+    if (dm->rofi_mode) dm->maxvis = dm->nitems < 40 ? dm->nitems : 40;
     create_window(dm);
     run(dm,cfd);
     destroy_window(dm);
@@ -346,6 +381,7 @@ int main(int argc, char **argv) {
   dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));
   read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
   if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
+  load_icons(&dm);MARK("icons loaded");
   daemon_serve(&dm);
   return 0;
 }

@@ -11,6 +11,7 @@
 #define SOCK_PATH "/tmp/sdmened.sock"
 #define PID_PATH "/tmp/sdmened.pid"
 
+static int rofi_mode = 0;
 static int alive(void) {
   FILE *pf = fopen(PID_PATH, "r");
   if (!pf) return 0;
@@ -24,6 +25,9 @@ static int alive(void) {
 }
 
 int main(int argc, char **argv) {
+  for (int i = 1; i < argc; i++)
+    if (argv[i][0] == '-' && argv[i][1] == 'R') rofi_mode = 1;
+
   if (!alive()) {
     char self[4096];
     char *dir = NULL;
@@ -56,6 +60,7 @@ int main(int argc, char **argv) {
   if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return 1; }
 
   signal(SIGPIPE, SIG_IGN);
+  write(fd, rofi_mode ? "r" : "d", 1);
   struct pollfd pfd = { .fd = fd, .events = POLLIN };
   char result[4096];
   int n = 0;
