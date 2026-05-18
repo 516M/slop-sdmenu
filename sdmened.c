@@ -17,6 +17,7 @@
 #include <sys/prctl.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <poll.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -136,7 +137,7 @@ static void killword(DMenu *dm) {
 }
 
 static void run(DMenu *dm, int out_fd) {
-  XEvent ev; char buf[32]; KeySym ks;
+  XEvent ev; char buf[32]; KeySym ks; int done = 0;
   Window prev_focus; int prev_revert;
   XGetInputFocus(dm->dpy, &prev_focus, &prev_revert);
   matchanddraw(dm); XFlush(dm->dpy); XSync(dm->dpy, False);
@@ -144,42 +145,47 @@ static void run(DMenu *dm, int out_fd) {
     if (XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime) == GrabSuccess) break;
     usleep(10000);
   }
-  while (1) {
-    XNextEvent(dm->dpy, &ev);
-    if (ev.type == Expose) { draw(dm); XFlush(dm->dpy); continue; }
-    if (ev.type != KeyPress) continue;
-    int len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-    if (ks == XK_Escape) { dm->sel = -1; break; }
-    if ((ks == XK_Return || ks == XK_KP_Enter) && dm->nmatches > 0) break;
-    if (ks == XK_Tab || ks == XK_Down || ks == XK_KP_Down) { if (dm->nmatches > 0) { dm->sel = (dm->sel + 1) % dm->nmatches; draw(dm); XFlush(dm->dpy); } continue; }
-    if ((ks == XK_Up || ks == XK_KP_Up) || (ks == XK_Tab && (ev.xkey.state & ShiftMask))) { if (dm->nmatches > 0) { dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches; draw(dm); XFlush(dm->dpy); } continue; }
-    if (ks == XK_Left || ks == XK_KP_Left) { if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); } continue; }
-    if (ks == XK_Right || ks == XK_KP_Right) { int l = strlen(dm->text); if (dm->cursor < l) { dm->cursor++; draw(dm); XFlush(dm->dpy); } continue; }
-    if (ks == XK_Home || ks == XK_KP_Home) { dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue; }
-    if (ks == XK_End || ks == XK_KP_End) { dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue; }
-    if (ks == XK_BackSpace) { if (dm->cursor > 0) { memmove(dm->text+dm->cursor-1, dm->text+dm->cursor, strlen(dm->text)-dm->cursor+1); dm->cursor--; matchanddraw(dm); XFlush(dm->dpy); } continue; }
-    if (ks == XK_Delete) { int l = strlen(dm->text); if (dm->cursor < l) { memmove(dm->text+dm->cursor, dm->text+dm->cursor+1, l-dm->cursor); matchanddraw(dm); XFlush(dm->dpy); } continue; }
-    if (len > 0) switch (buf[0]) {
-      case 1: dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue;
-      case 2: if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); } continue;
-      case 3: dm->sel = -1; goto done;
-      case 4: if (dm->cursor < (int)strlen(dm->text)) { memmove(dm->text+dm->cursor, dm->text+dm->cursor+1, strlen(dm->text)-dm->cursor); matchanddraw(dm); XFlush(dm->dpy); } continue;
-      case 5: dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue;
-      case 6: if (dm->cursor < (int)strlen(dm->text)) { dm->cursor++; draw(dm); XFlush(dm->dpy); } continue;
-      case 7: continue;
-      case 8: if (dm->cursor > 0) { memmove(dm->text+dm->cursor-1, dm->text+dm->cursor, strlen(dm->text)-dm->cursor+1); dm->cursor--; matchanddraw(dm); XFlush(dm->dpy); } continue;
-      case 9: if (dm->nmatches > 0) { dm->sel = (dm->sel+1)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
-      case 10: case 13: if (dm->nmatches > 0) goto done; continue;
-      case 11: dm->text[dm->cursor] = 0; matchanddraw(dm); XFlush(dm->dpy); continue;
-      case 14: if (dm->nmatches > 0) { dm->sel = (dm->sel+1)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
-      case 16: if (dm->nmatches > 0) { dm->sel = (dm->sel-1+dm->nmatches)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
-      case 21: dm->text[0] = 0; dm->cursor = 0; matchanddraw(dm); XFlush(dm->dpy); continue;
-      case 23: killword(dm); matchanddraw(dm); XFlush(dm->dpy); continue;
-      default:
-        if (isprint((unsigned char)buf[0])) { int l = strlen(dm->text); if (l < INP_MAX-1) { memmove(dm->text+dm->cursor+1, dm->text+dm->cursor, l-dm->cursor+1); dm->text[dm->cursor] = buf[0]; dm->cursor++; matchanddraw(dm); XFlush(dm->dpy); } }
+  int xfd = XConnectionNumber(dm->dpy);
+  while (!done) {
+    struct pollfd pfds[2] = {{.fd=xfd,.events=POLLIN},{.fd=out_fd,.events=POLLIN}};
+    if (poll(pfds, 2, -1) < 0) break;
+    if (pfds[1].revents & (POLLHUP|POLLIN|POLLERR)) { dm->sel = -1; break; }
+    if (!(pfds[0].revents & POLLIN)) continue;
+    while (!done && XPending(dm->dpy)) {
+      XNextEvent(dm->dpy, &ev);
+      if (ev.type == Expose) { draw(dm); XFlush(dm->dpy); continue; }
+      if (ev.type != KeyPress) continue;
+      int len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+      if (ks == XK_Escape) { dm->sel = -1; done = 1; break; }
+      if ((ks == XK_Return || ks == XK_KP_Enter) && dm->nmatches > 0) { done = 1; break; }
+      if (ks == XK_Tab || ks == XK_Down || ks == XK_KP_Down) { if (dm->nmatches > 0) { dm->sel = (dm->sel + 1) % dm->nmatches; draw(dm); XFlush(dm->dpy); } continue; }
+      if ((ks == XK_Up || ks == XK_KP_Up) || (ks == XK_Tab && (ev.xkey.state & ShiftMask))) { if (dm->nmatches > 0) { dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches; draw(dm); XFlush(dm->dpy); } continue; }
+      if (ks == XK_Left || ks == XK_KP_Left) { if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); } continue; }
+      if (ks == XK_Right || ks == XK_KP_Right) { int l = strlen(dm->text); if (dm->cursor < l) { dm->cursor++; draw(dm); XFlush(dm->dpy); } continue; }
+      if (ks == XK_Home || ks == XK_KP_Home) { dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue; }
+      if (ks == XK_End || ks == XK_KP_End) { dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue; }
+      if (ks == XK_BackSpace) { if (dm->cursor > 0) { memmove(dm->text+dm->cursor-1, dm->text+dm->cursor, strlen(dm->text)-dm->cursor+1); dm->cursor--; matchanddraw(dm); XFlush(dm->dpy); } continue; }
+      if (ks == XK_Delete) { int l = strlen(dm->text); if (dm->cursor < l) { memmove(dm->text+dm->cursor, dm->text+dm->cursor+1, l-dm->cursor); matchanddraw(dm); XFlush(dm->dpy); } continue; }
+      if (len > 0) switch (buf[0]) {
+        case 1: dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue;
+        case 2: if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); } continue;
+        case 3: dm->sel = -1; done = 1; break;
+        case 4: if (dm->cursor < (int)strlen(dm->text)) { memmove(dm->text+dm->cursor, dm->text+dm->cursor+1, strlen(dm->text)-dm->cursor); matchanddraw(dm); XFlush(dm->dpy); } continue;
+        case 5: dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue;
+        case 6: if (dm->cursor < (int)strlen(dm->text)) { dm->cursor++; draw(dm); XFlush(dm->dpy); } continue;
+        case 7: continue;
+        case 8: if (dm->cursor > 0) { memmove(dm->text+dm->cursor-1, dm->text+dm->cursor, strlen(dm->text)-dm->cursor+1); dm->cursor--; matchanddraw(dm); XFlush(dm->dpy); } continue;
+        case 9: if (dm->nmatches > 0) { dm->sel = (dm->sel+1)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
+        case 10: case 13: if (dm->nmatches > 0) { done = 1; break; } continue;
+        case 11: dm->text[dm->cursor] = 0; matchanddraw(dm); XFlush(dm->dpy); continue;
+        case 14: if (dm->nmatches > 0) { dm->sel = (dm->sel+1)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
+        case 16: if (dm->nmatches > 0) { dm->sel = (dm->sel-1+dm->nmatches)%dm->nmatches; draw(dm); XFlush(dm->dpy); } continue;
+        case 21: dm->text[0] = 0; dm->cursor = 0; matchanddraw(dm); XFlush(dm->dpy); continue;
+        case 23: killword(dm); matchanddraw(dm); XFlush(dm->dpy); continue;
+        default: if (isprint((unsigned char)buf[0])) { int l = strlen(dm->text); if (l < INP_MAX-1) { memmove(dm->text+dm->cursor+1, dm->text+dm->cursor, l-dm->cursor+1); dm->text[dm->cursor] = buf[0]; dm->cursor++; matchanddraw(dm); XFlush(dm->dpy); } }
+      }
     }
   }
-done:
   XUngrabKeyboard(dm->dpy, CurrentTime); XSync(dm->dpy, False);
   if (prev_focus != None && prev_focus != PointerRoot)
     XSetInputFocus(dm->dpy, prev_focus, RevertToParent, CurrentTime);
@@ -208,58 +214,150 @@ static int init_x11(DMenu *dm) {
   dm->promptw = textw(dm, prompt, strlen(prompt)); return 0;
 }
 
-static Pixmap ppm_to_pixmap(DMenu *dm, const char *path) {
-  char cmd[4096]; snprintf(cmd, sizeof(cmd), "convert '%s' -resize %dx%d ppm:- 2>/dev/null", path, ICON_SIZE, ICON_SIZE);
-  FILE *fp = popen(cmd, "r"); if (!fp) return 0;
-  char buf[256]; if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; }
-  if (buf[0] != 'P' || buf[1] != '6') { pclose(fp); return 0; }
-  do { if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; } } while (buf[0] == '#');
-  int w, h; sscanf(buf, "%d %d", &w, &h);
-  if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; }
-  int rb = w * 3; unsigned char *rgb = malloc(h * rb);
-  for (int y = 0; y < h; y++) if (fread(rgb + y * rb, 1, rb, fp) != (size_t)rb) { free(rgb); pclose(fp); return 0; }
-  pclose(fp);
-  int dep = DefaultDepth(dm->dpy, dm->scr);
-  XImage *img = XCreateImage(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dep, ZPixmap, 0, NULL, w, h, 32, 0);
-  if (!img) { free(rgb); return 0; }
-  img->data = calloc(h, img->bytes_per_line);
-  for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) {
-    unsigned char r = rgb[(y*w+x)*3], g = rgb[(y*w+x)*3+1], b = rgb[(y*w+x)*3+2];
-    unsigned long px = (dep>=24)?(r<<16)|(g<<8)|b:(dep==16)?((r>>3)<<11)|((g>>2)<<5)|(b>>3):((r>>5)<<5)|((g>>5)<<2)|(b>>6);
-    long d = y * img->bytes_per_line + x * (img->bits_per_pixel/8);
-    if (img->byte_order == LSBFirst) {
-      img->data[d] = px & 0xFF; if (img->bits_per_pixel >= 16) img->data[d+1] = (px>>8)&0xFF; if (img->bits_per_pixel >= 24) img->data[d+2] = (px>>16)&0xFF;
-    } else {
-      if (img->bits_per_pixel >= 24) img->data[d] = (px>>16)&0xFF; if (img->bits_per_pixel >= 16) img->data[d+1] = (px>>8)&0xFF; img->data[d+2] = px & 0xFF;
-    }
-  }
-  free(rgb); Pixmap pm = XCreatePixmap(dm->dpy, RootWindow(dm->dpy, dm->scr), w, h, dep);
-  GC gc = XCreateGC(dm->dpy, pm, 0, NULL); XPutImage(dm->dpy, pm, gc, img, 0, 0, 0, 0, w, h);
-  XFreeGC(dm->dpy, gc); free(img->data); img->data = NULL; XDestroyImage(img); return pm;
+static int icon_cache_dir(char *buf, size_t sz) {
+  const char *ch = getenv("XDG_CACHE_HOME");
+  if (ch) return snprintf(buf, sz, "%s/sdmenu_icons", ch);
+  return snprintf(buf, sz, "%s/.cache/sdmenu_icons", getenv("HOME") ? getenv("HOME") : "/tmp");
 }
 
-static void load_icons(DMenu *dm) {
+// Load icon RGB data from disk cache only (no convert). Returns 0 if not cached.
+static int icon_load_cached(const char *name, unsigned char **rgb, int *w, int *h) {
+  char cdir[4096]; icon_cache_dir(cdir, sizeof(cdir));
+  char cpath[4096]; snprintf(cpath, sizeof(cpath), "%s/%s.rgb", cdir, name);
+  FILE *f = fopen(cpath, "r");
+  if (!f) return 0;
+  int dim; if (fread(&dim, sizeof(dim), 1, f) != 1) { fclose(f); return 0; }
+  *w = dim; *h = dim;
+  *rgb = malloc((*w) * (*h) * 3);
+  int ok = (fread(*rgb, 1, (*w) * (*h) * 3, f) == (size_t)((*w) * (*h) * 3));
+  fclose(f);
+  if (!ok) { free(*rgb); *rgb = NULL; return 0; }
+  return 1;
+}
+
+// Load icon RGB data from PNG via convert, then cache to disk. Returns 0 on failure.
+static int icon_load_convert(const char *pngpath, const char *name, unsigned char **rgb, int *w, int *h) {
+  char cmd[4096];
+  snprintf(cmd, sizeof(cmd), "convert '%s' -resize %dx%d ppm:- 2>/dev/null", pngpath, ICON_SIZE, ICON_SIZE);
+  FILE *fp = popen(cmd, "r");
+  if (!fp) return 0;
+  char buf[256];
+  if (!fgets(buf,sizeof(buf),fp)||buf[0]!='P'||buf[1]!='6') { pclose(fp); return 0; }
+  do { if (!fgets(buf,sizeof(buf),fp)) { pclose(fp); return 0; } } while(buf[0]=='#');
+  sscanf(buf,"%d %d",w,h);
+  if (!fgets(buf,sizeof(buf),fp)) { pclose(fp); return 0; }
+  int rb = (*w)*3;
+  *rgb = malloc((*h) * rb);
+  for (int y=0;y<*h;y++) if (fread((*rgb)+y*rb,1,rb,fp)!=(size_t)rb) { free(*rgb); *rgb=NULL; pclose(fp); return 0; }
+  pclose(fp);
+  // Write to cache
+  char cdir[4096]; icon_cache_dir(cdir,sizeof(cdir)); mkdir(cdir,0755);
+  char cpath[4096]; snprintf(cpath,sizeof(cpath),"%s/%s.rgb",cdir,name);
+  FILE *cf=fopen(cpath,"w");
+  if(cf){int dim=*w;fwrite(&dim,sizeof(dim),1,cf);fwrite(*rgb,1,(*h)*rb,cf);fclose(cf);}
+  return 1;
+}
+
+// Create an X11 Pixmap from raw RGB data
+static Pixmap rgb_to_pixmap(DMenu *dm, unsigned char *rgb, int w, int h) {
+  int dep = DefaultDepth(dm->dpy, dm->scr);
+  XImage *img = XCreateImage(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dep, ZPixmap, 0, NULL, w, h, 32, 0);
+  if (!img) return 0;
+  img->data = calloc(h, img->bytes_per_line);
+  for (int y=0;y<h;y++) for(int x=0;x<w;x++) {
+    unsigned char r=rgb[(y*w+x)*3],g=rgb[(y*w+x)*3+1],b=rgb[(y*w+x)*3+2];
+    unsigned long px=(dep>=24)?(r<<16)|(g<<8)|b:(dep==16)?((r>>3)<<11)|((g>>2)<<5)|(b>>3):((r>>5)<<5)|((g>>5)<<2)|(b>>6);
+    long d=y*img->bytes_per_line+x*(img->bits_per_pixel/8);
+    if(img->byte_order==LSBFirst){
+      img->data[d]=px&0xFF; if(img->bits_per_pixel>=16) img->data[d+1]=(px>>8)&0xFF; if(img->bits_per_pixel>=24) img->data[d+2]=(px>>16)&0xFF;
+    } else {
+      if(img->bits_per_pixel>=24) img->data[d]=(px>>16)&0xFF; if(img->bits_per_pixel>=16) img->data[d+1]=(px>>8)&0xFF; img->data[d+2]=px&0xFF;
+    }
+  }
+  Pixmap pm=XCreatePixmap(dm->dpy,RootWindow(dm->dpy,dm->scr),w,h,dep);
+  GC gc=XCreateGC(dm->dpy,pm,0,NULL); XPutImage(dm->dpy,pm,gc,img,0,0,0,0,w,h);
+  XFreeGC(dm->dpy,gc); free(img->data); img->data=NULL; XDestroyImage(img); return pm;
+}
+
+static int icons_cached = 0;
+static int icons_full = 0;
+static int ndesk = 0;
+static char **desk_names = NULL, **desk_icons = NULL;
+
+static const char *appdirs[] = {
+  "/run/current-system/sw/share/applications",
+  "/usr/share/applications",
+  "/usr/local/share/applications",
+  "/var/lib/flatpak/exports/share/applications",
+  NULL
+};
+
+static const char *iconsizes[] = {"48x48","32x32","24x24","64x64","96x96","128x128"};
+
+static void load_icons_cache(DMenu *dm) {
+  if (icons_cached) return;
   dm->icons = calloc(dm->nitems, sizeof(Icon));
-  DIR *dir = opendir("/run/current-system/sw/share/applications"); if (!dir) return;
-  struct dirent *e; int nd = 0; char **dn = NULL, **di = NULL;
-  while ((e = readdir(dir))) {
-    int l = strlen(e->d_name); if (l < 9 || strcmp(e->d_name + l - 8, ".desktop")) continue;
-    char p[4096]; snprintf(p, sizeof(p), "/run/current-system/sw/share/applications/%s", e->d_name);
-    FILE *fp = fopen(p, "r"); if (!fp) continue;
-    char *ic = NULL, ln[1024];
-    while (fgets(ln, sizeof(ln), fp)) { if (strncmp(ln, "Icon=", 5) == 0) { free(ic); ic = strdup(ln+5); char *nl = strchr(ic, '\n'); if (nl) *nl = 0; } }
-    fclose(fp); if (!ic) continue;
-    char bn[256]; strncpy(bn, e->d_name, l-8); bn[l-8] = 0;
-    dn = realloc(dn, (nd+1)*sizeof(char*)); di = realloc(di, (nd+1)*sizeof(char*));
-    dn[nd] = strdup(bn); di[nd] = ic; nd++;
+  for (int ai = 0; appdirs[ai]; ai++) {
+    DIR *dir = opendir(appdirs[ai]); if (!dir) continue;
+    struct dirent *e;
+    while ((e = readdir(dir))) {
+      int l = strlen(e->d_name);
+      if (l < 9 || strcmp(e->d_name + l - 8, ".desktop")) continue;
+      char p[4096]; snprintf(p, sizeof(p), "%s/%s", appdirs[ai], e->d_name);
+      FILE *fp = fopen(p, "r"); if (!fp) continue;
+      char *ic = NULL, ln[1024];
+      while (fgets(ln, sizeof(ln), fp)) {
+        if (strncmp(ln, "Icon=", 5) == 0) { free(ic); ic = strdup(ln+5); char *nl = strchr(ic, '\n'); if (nl) *nl = 0; }
+      }
+      fclose(fp); if (!ic) continue;
+      char bn[256]; strncpy(bn, e->d_name, l-8); bn[l-8] = 0;
+      desk_names = realloc(desk_names, (ndesk+1)*sizeof(char*));
+      desk_icons = realloc(desk_icons, (ndesk+1)*sizeof(char*));
+      desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = ic; ndesk++;
+    }
+    closedir(dir);
   }
-  closedir(dir); if (nd == 0) return;
-  for (int i = 0; i < dm->nitems; i++) for (int d = 0; d < nd; d++) if (strcmp(dm->items[i], dn[d]) == 0) {
-    char *sz[] = {"48x48","32x32","24x24","64x64","96x96","128x128"};
-    for (int s = 0; s < 6; s++) { char ip[4096]; snprintf(ip, sizeof(ip), "/run/current-system/sw/share/icons/hicolor/%s/apps/%s.png", sz[s], di[d]); FILE *t = fopen(ip, "r"); if (t) { fclose(t); Pixmap pm = ppm_to_pixmap(dm, ip); if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; } break; } }
-    break;
+  if (ndesk == 0) { icons_cached = 1; icons_full = 1; return; }
+  for (int i = 0; i < dm->nitems; i++)
+    for (int d = 0; d < ndesk; d++)
+      if (strcmp(dm->items[i], desk_names[d]) == 0) {
+        unsigned char *rgb; int w, h;
+        if (icon_load_cached(desk_names[d], &rgb, &w, &h)) {
+          Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
+          if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+          free(rgb);
+        }
+        break;
+      }
+  icons_cached = 1;
+}
+
+static void load_icons_convert(DMenu *dm) {
+  if (icons_full) return;
+  load_icons_cache(dm);
+  for (int i = 0; i < dm->nitems; i++) {
+    if (dm->icons && dm->icons[i].loaded) continue;
+    for (int d = 0; d < ndesk; d++)
+      if (dm->items[i] && desk_names[d] && strcmp(dm->items[i], desk_names[d]) == 0) {
+        if (dm->icons && dm->icons[i].loaded) break;
+        for (int ai = 0; appdirs[ai]; ai++) {
+          for (int s = 0; s < 6; s++) {
+            char ip[4096]; snprintf(ip, sizeof(ip), "%s/../icons/hicolor/%s/apps/%s.png", appdirs[ai], iconsizes[s], desk_icons[d]);
+            struct stat st; if (stat(ip, &st) == 0) {
+              unsigned char *rgb; int w, h;
+              if (icon_load_convert(ip, desk_names[d], &rgb, &w, &h)) {
+                Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
+                if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+                free(rgb);
+              }
+              goto icon_done;
+            }
+          }
+        }
+        icon_done: break;
+      }
   }
-  for (int d = 0; d < nd; d++) { free(dn[d]); free(di[d]); } free(dn); free(di);
+  icons_full = 1; MARK("icons full");
 }
 
 static void create_window(DMenu *dm) {
@@ -343,7 +441,6 @@ static int alive(void) {
 
 static int daemon_sfd = -1;
 
-static int icons_loaded = 0;
 static int paths_resolved = 0;
 
 static void resolve_paths(DMenu *dm) {
@@ -372,9 +469,7 @@ static void daemon_serve(DMenu *dm) {
     char mode_byte = 'd';
     read(cfd, &mode_byte, 1);
     dm->rofi_mode = (mode_byte == 'r');
-    if (dm->rofi_mode && !icons_loaded) { load_icons(dm); icons_loaded = 1; }
     if (dm->rofi_mode && !paths_resolved) { resolve_paths(dm); }
-    if (!icons_loaded) { load_icons(dm); icons_loaded = 1; }
     dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;
     if (dm->rofi_mode) dm->maxvis = dm->nitems < 40 ? dm->nitems : 40;
     create_window(dm);
@@ -382,6 +477,7 @@ static void daemon_serve(DMenu *dm) {
     destroy_window(dm);
     XSync(dm->dpy,False);
     close(cfd);
+    if (!icons_full) load_icons_convert(dm);
   }
 }
 
@@ -419,6 +515,7 @@ int main(int argc, char **argv) {
   read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
   dm.paths=calloc(MAX_ITEMS,sizeof(char*));
   if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
+  load_icons_cache(&dm); MARK("icons cached");
   daemon_serve(&dm);
   return 0;
 }
