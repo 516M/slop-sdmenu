@@ -8,6 +8,19 @@
 #include <string.h>
 #include <ctype.h>
 #include <locale.h>
+#include <time.h>
+
+static int benchmark = 0;
+static long t0 = 0;
+
+static long ms(void) {
+  struct timespec t;
+  clock_gettime(CLOCK_MONOTONIC, &t);
+  return t.tv_sec * 1000L + t.tv_nsec / 1000000L;
+}
+
+#define MARK(msg) do { if (benchmark) \
+  fprintf(stderr, "  %3ld ms  %s\n", ms() - t0, msg); } while (0)
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -65,7 +78,10 @@ static int prefixmatch(const char *item, const char *pat) {
   return strncmp(item, pat, n) == 0;
 }
 
+static long matchtime = 0;
+
 static void match(DMenu *dm) {
+  long mt0 = benchmark ? ms() : 0;
   dm->nmatches = 0;
   for (int i = 0; i < dm->nitems; i++)
     if (prefixmatch(dm->items[i], dm->text))
@@ -74,6 +90,7 @@ static void match(DMenu *dm) {
     dm->sel = 0;
   else if (dm->sel >= dm->nmatches)
     dm->sel = dm->nmatches - 1;
+  matchtime += ms() - mt0;
 }
 
 static void draw(DMenu *dm) {
@@ -133,6 +150,10 @@ static void run(DMenu *dm) {
   KeySym ks;
 
   matchanddraw(dm);
+  if (benchmark) {
+    fprintf(stderr, "  %3ld ms  first frame drawn\n", ms() - t0);
+    fprintf(stderr, "  %3ld ms  initial match (%d/%d items)\n", matchtime, dm->nmatches, dm->nitems);
+  }
 
   while (1) {
     XNextEvent(dm->dpy, &ev);
@@ -250,7 +271,8 @@ static void run(DMenu *dm) {
     }
   }
 done:
-  ;
+  if (benchmark)
+    fprintf(stderr, "  %3ld ms  total match time\n", matchtime);
 }
 
 static XftColor initcolor(Display *dpy, Colormap cmap, const char *hex) {
@@ -268,6 +290,8 @@ static void usage(void) {
 int main(int argc, char **argv) {
   setlocale(LC_CTYPE, "");
   DMenu dm = {0};
+  benchmark = getenv("SDMENU_BENCH") != NULL;
+  t0 = ms();
 
   for (int i = 1; i < argc; i++) {
     if (argv[i][0] == '-')
@@ -308,21 +332,39 @@ int main(int argc, char **argv) {
       dm.items[dm.nitems++] = strdup(line);
   }
   if (dm.nitems == 0) return 1;
+  MARK("items read from stdin");
+
+  if (benchmark) {
+    const char *tests[] = {"", "a", "ab", "abc", "x", "z", "xy", "open", "fire", NULL};
+    for (int t = 0; tests[t]; t++) {
+      strcpy(dm.text, tests[t]);
+      dm.cursor = strlen(dm.text);
+      matchtime = 0;
+      int nruns = 1000;
+      for (int r = 0; r < nruns; r++) match(&dm);
+      fprintf(stderr, "  match '%s': %ld us  (%d/%d items, %d runs)\n",
+        tests[t][0] ? tests[t] : "(empty)", matchtime * 1000 / nruns,
+        dm.nmatches, dm.nitems, nruns);
+    }
+  }
 
   dm.dpy = XOpenDisplay(NULL);
   if (!dm.dpy) { fprintf(stderr, "sdmenu: cannot open display\n"); return 1; }
   dm.scr = DefaultScreen(dm.dpy);
   dm.vis = DefaultVisual(dm.dpy, dm.scr);
   dm.cmap = DefaultColormap(dm.dpy, dm.scr);
+  MARK("XOpenDisplay");
 
   dm.xfont = XftFontOpenName(dm.dpy, dm.scr, fontstr);
   if (!dm.xfont) dm.xfont = XftFontOpenName(dm.dpy, dm.scr, "fixed:size=12");
   if (!dm.xfont) { fprintf(stderr, "sdmenu: cannot load font\n"); return 1; }
+  MARK("font loaded");
 
   dm.normfg_c = initcolor(dm.dpy, dm.cmap, normfg);
   dm.normbg_c = initcolor(dm.dpy, dm.cmap, normbg);
   dm.selfg_c = initcolor(dm.dpy, dm.cmap, selfg);
   dm.selbg_c = initcolor(dm.dpy, dm.cmap, selbg);
+  MARK("colors allocated");
 
   dm.promptw = textw(&dm, prompt, strlen(prompt));
 
@@ -359,6 +401,7 @@ int main(int argc, char **argv) {
 
   XSelectInput(dm.dpy, dm.win, ExposureMask | KeyPressMask);
   XMapRaised(dm.dpy, dm.win);
+  MARK("window mapped");
 
   run(&dm);
 
