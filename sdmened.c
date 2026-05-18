@@ -285,7 +285,6 @@ static int alive(void) {
 static int daemon_sfd = -1;
 
 static void daemon_serve(DMenu *dm) {
-  MARK("daemon listening");
   for(;;){
     int cfd=accept(daemon_sfd,NULL,NULL);
     if(cfd<0) continue;
@@ -293,6 +292,7 @@ static void daemon_serve(DMenu *dm) {
     create_window(dm);
     run(dm,cfd);
     destroy_window(dm);
+    XSync(dm->dpy,False);
     close(cfd);
   }
 }
@@ -320,15 +320,16 @@ int main(int argc, char **argv) {
   if(alive())return 0;
   signal(SIGPIPE,SIG_IGN);
   prctl(PR_SET_NAME,"sdmened");
-  FILE*pf=fopen("/tmp/sdmened.pid","w");if(pf){fprintf(pf,"%d\n",getpid());fclose(pf);}
-  dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));
-  read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
-  if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
+
   unlink(SOCK_PATH);
   struct sockaddr_un sa; sa.sun_family=AF_UNIX; strcpy(sa.sun_path,SOCK_PATH);
   daemon_sfd=socket(AF_UNIX,SOCK_STREAM,0); bind(daemon_sfd,(struct sockaddr*)&sa,sizeof(sa)); listen(daemon_sfd,4);
-  MARK("socket ready");
-  load_icons(&dm);MARK("icons loaded");
+
+  FILE*pf=fopen("/tmp/sdmened.pid","w");if(pf){fprintf(pf,"%d\n",getpid());fclose(pf);}
+
+  dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));
+  read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
+  if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
   daemon_serve(&dm);
   return 0;
 }
