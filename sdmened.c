@@ -113,7 +113,7 @@ static void killword(DMenu *dm) {
 
 static void run(DMenu *dm, int out_fd) {
   XEvent ev; char buf[32]; KeySym ks;
-  matchanddraw(dm); XFlush(dm->dpy);
+  matchanddraw(dm); XFlush(dm->dpy); XSync(dm->dpy, False);
   XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
   while (1) {
     XNextEvent(dm->dpy, &ev);
@@ -282,12 +282,11 @@ static int alive(void) {
   int ok=(connect(fd,(struct sockaddr*)&a,sizeof(a))==0);close(fd);return ok;
 }
 
+static int daemon_sfd = -1;
+
 static void daemon_serve(DMenu *dm) {
-  unlink(SOCK_PATH);
-  struct sockaddr_un a; a.sun_family=AF_UNIX; strcpy(a.sun_path,SOCK_PATH);
-  int sfd=socket(AF_UNIX,SOCK_STREAM,0);bind(sfd,(struct sockaddr*)&a,sizeof(a));listen(sfd,4);
   MARK("daemon listening");
-  for(;;){int cfd=accept(sfd,NULL,NULL);if(cfd<0)continue;dm->text[0]=0;dm->cursor=0;dm->sel=0;dm->top=0;create_window(dm);run(dm,cfd);destroy_window(dm);close(cfd);}
+  for(;;){int cfd=accept(daemon_sfd,NULL,NULL);if(cfd<0)continue;dm->text[0]=0;dm->cursor=0;dm->sel=0;dm->top=0;create_window(dm);run(dm,cfd);destroy_window(dm);close(cfd);}
 }
 
 static void usage(void) {
@@ -316,6 +315,10 @@ int main(int argc, char **argv) {
   dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));
   read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
   if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
+  unlink(SOCK_PATH);
+  struct sockaddr_un sa; sa.sun_family=AF_UNIX; strcpy(sa.sun_path,SOCK_PATH);
+  daemon_sfd=socket(AF_UNIX,SOCK_STREAM,0); bind(daemon_sfd,(struct sockaddr*)&sa,sizeof(sa)); listen(daemon_sfd,4);
+  MARK("socket ready");
   load_icons(&dm);MARK("icons loaded");
   daemon_serve(&dm);
   return 0;
