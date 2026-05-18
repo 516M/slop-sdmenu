@@ -16,6 +16,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
+#include <fcntl.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -585,13 +586,35 @@ static void read_items(DMenu *dm) {
 
 static int try_daemon(void) {
   struct sockaddr_un addr;
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) return -1;
   addr.sun_family = AF_UNIX;
   strcpy(addr.sun_path, SOCK_PATH);
-  if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-    close(fd); return -1;
+
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return -1;
+  int ok = (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0);
+  if (!ok) { close(fd); fd = -1; }
+
+  if (!ok) {
+    pid_t pid = fork();
+    if (pid == 0) {
+      setsid();
+      int dn = open("/dev/null", O_RDWR);
+      dup2(dn, 0); dup2(dn, 1); dup2(dn, 2);
+      if (dn > 2) close(dn);
+      execl("/proc/self/exe", "sdmened", "-d", NULL);
+      _exit(1);
+    }
+    if (pid > 0) {
+      for (int i = 0; i < 100; i++) {
+        usleep(10000);
+        fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (fd < 0) return -1;
+        if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0) { ok = 1; break; }
+        close(fd); fd = -1;
+      }
+    }
   }
+  if (!ok) return -1;
   char result[4096];
   int n = read(fd, result, sizeof(result) - 1);
   close(fd);
@@ -665,7 +688,7 @@ int main(int argc, char **argv) {
     else usage();
   }
 
-  if (!daemon_mode && try_daemon() == 0)
+  if (!daemon_mode && !stdin_has_data() && try_daemon() == 0)
     return 0;
 
   dm.items = malloc(MAX_ITEMS * sizeof(char *));
