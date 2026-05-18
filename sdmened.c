@@ -101,10 +101,10 @@ static void draw(DMenu *dm) {
     int hx = cx + 4;
     for (int i = 0; i < dm->nmatches && hx < dm->width - PAD; i++) {
       int idx = dm->matches[i];
-      int iw = 0;
-      if (dm->icons && dm->icons[idx].loaded) { iw = ICON_SIZE + 2; XCopyArea(dm->dpy, dm->icons[idx].pixmap, dm->win, dm->gc, 0, 0, ICON_SIZE, ICON_SIZE, hx, (dm->BH - ICON_SIZE) / 2); }
       int tw = textw(dm, dm->items[idx], strlen(dm->items[idx]));
+      int iw = (dm->icons && dm->icons[idx].loaded) ? (ICON_SIZE + 2) : 0;
       if (i == dm->sel) { XSetForeground(dm->dpy, dm->gc, dm->selbg_p); XFillRectangle(dm->dpy, dm->win, dm->gc, hx - 1, 0, iw + tw + 2, dm->BH); }
+      if (iw) XCopyArea(dm->dpy, dm->icons[idx].pixmap, dm->win, dm->gc, 0, 0, ICON_SIZE, ICON_SIZE, hx, (dm->BH - ICON_SIZE) / 2);
       XftDrawStringUtf8(dm->xdraw, (i==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, hx + iw, dm->xfont->ascent + 1, (const FcChar8*)dm->items[idx], strlen(dm->items[idx]));
       hx += iw + tw + 8;
     }
