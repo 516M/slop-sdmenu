@@ -282,7 +282,7 @@ static Pixmap rgb_to_pixmap(DMenu *dm, unsigned char *rgb, int w, int h) {
 static int icons_cached = 0;
 static int icons_full = 0;
 static int ndesk = 0;
-static char **desk_names = NULL, **desk_icons = NULL;
+static char **desk_names = NULL, **desk_icons = NULL, **desk_execs = NULL;
 
 static const char *appdirs[] = {
   "/run/current-system/sw/share/applications",
@@ -305,30 +305,42 @@ static void load_icons_cache(DMenu *dm) {
       if (l < 9 || strcmp(e->d_name + l - 8, ".desktop")) continue;
       char p[4096]; snprintf(p, sizeof(p), "%s/%s", appdirs[ai], e->d_name);
       FILE *fp = fopen(p, "r"); if (!fp) continue;
-      char *ic = NULL, ln[1024];
+      char *ic = NULL, *ex = NULL, ln[1024];
       while (fgets(ln, sizeof(ln), fp)) {
         if (strncmp(ln, "Icon=", 5) == 0) { free(ic); ic = strdup(ln+5); char *nl = strchr(ic, '\n'); if (nl) *nl = 0; }
+        if (strncmp(ln, "Exec=", 5) == 0) {
+          free(ex); ex = strdup(ln+5); char *nl = strchr(ex, '\n'); if (nl) *nl = 0;
+          // Extract just the command name from Exec= (before first space, strip path)
+          char *sp = strchr(ex, ' '); if (sp) *sp = 0;
+          char *sl = strrchr(ex, '/'); if (sl) { char *tmp = strdup(sl+1); free(ex); ex = tmp; }
+        }
       }
-      fclose(fp); if (!ic) continue;
+      fclose(fp); if (!ic) { free(ex); continue; }
       char bn[256]; strncpy(bn, e->d_name, l-8); bn[l-8] = 0;
       desk_names = realloc(desk_names, (ndesk+1)*sizeof(char*));
       desk_icons = realloc(desk_icons, (ndesk+1)*sizeof(char*));
-      desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = ic; ndesk++;
+      desk_execs = realloc(desk_execs, (ndesk+1)*sizeof(char*));
+      desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = ic; desk_execs[ndesk] = ex ? ex : strdup(bn); ndesk++;
     }
     closedir(dir);
   }
   if (ndesk == 0) { icons_cached = 1; icons_full = 1; return; }
-  for (int i = 0; i < dm->nitems; i++)
-    for (int d = 0; d < ndesk; d++)
-      if (strcmp(dm->items[i], desk_names[d]) == 0) {
-        unsigned char *rgb; int w, h;
-        if (icon_load_cached(desk_names[d], &rgb, &w, &h)) {
-          Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
-          if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
-          free(rgb);
-        }
-        break;
+  for (int i = 0; i < dm->nitems; i++) {
+    if (dm->icons[i].loaded) continue;
+    for (int d = 0; d < ndesk; d++) {
+      int match = (strcmp(dm->items[i], desk_names[d]) == 0) ||
+                  (desk_execs[d] && strcmp(dm->items[i], desk_execs[d]) == 0) ||
+                  (desk_execs[d] && strlen(dm->items[i]) > 1 && strstr(desk_execs[d], dm->items[i]) == desk_execs[d]);
+      if (!match) continue;
+      unsigned char *rgb; int w, h;
+      if (icon_load_cached(desk_names[d], &rgb, &w, &h)) {
+        Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
+        if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+        free(rgb);
       }
+      break;
+    }
+  }
   icons_cached = 1;
 }
 
@@ -337,10 +349,15 @@ static void load_icons_convert(DMenu *dm) {
   load_icons_cache(dm);
   for (int i = 0; i < dm->nitems; i++) {
     if (dm->icons && dm->icons[i].loaded) continue;
-    for (int d = 0; d < ndesk; d++)
-      if (dm->items[i] && desk_names[d] && strcmp(dm->items[i], desk_names[d]) == 0) {
-        if (dm->icons && dm->icons[i].loaded) break;
-        for (int ai = 0; appdirs[ai]; ai++) {
+    for (int d = 0; d < ndesk; d++) {
+      int match = dm->items[i] && desk_names[d] && (
+        strcmp(dm->items[i], desk_names[d]) == 0 ||
+        (desk_execs[d] && strcmp(dm->items[i], desk_execs[d]) == 0) ||
+        (desk_execs[d] && strlen(dm->items[i]) > 1 && strstr(desk_execs[d], dm->items[i]) == desk_execs[d])
+      );
+      if (!match) continue;
+      if (dm->icons && dm->icons[i].loaded) break;
+      for (int ai = 0; appdirs[ai]; ai++) {
           for (int s = 0; s < 6; s++) {
             char ip[4096]; snprintf(ip, sizeof(ip), "%s/../icons/hicolor/%s/apps/%s.png", appdirs[ai], iconsizes[s], desk_icons[d]);
             struct stat st; if (stat(ip, &st) == 0) {
