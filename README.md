@@ -149,6 +149,7 @@ pacman -S libx11 libxft libxinerama freetype2 fontconfig
 ## Testing
 
 ```bash
-./test.sh     # functional tests (daemon, client, IPC, icons)
-./bench.sh    # startup timing benchmark
+./build.sh test     # functional tests
+./build.sh bench    # startup timing benchmark
+./build.sh status   # show state of all components
 ```
