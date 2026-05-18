@@ -19,17 +19,17 @@
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
-#define PAD 4
-#define BORDER 2
+#define PAD 6
+#define BORDER 1
 #define SOCK_PATH "/tmp/sdmened.sock"
 #define ICON_SIZE 24
 
 static char *fontstr = "9x15";
-static char *prompt = "";
-static char *normbg = "#222222";
-static char *normfg = "#bbbbbb";
-static char *selbg  = "#005577";
-static char *selfg  = "#eeeeee";
+static char *prompt = "> ";
+static char *normbg = "#0d0d0d";
+static char *normfg = "#c8c8c8";
+static char *selbg  = "#2a2a2a";
+static char *selfg  = "#ffffff";
 static int lines = 0;
 static int topbar = 1;
 static int mon = -1;
@@ -164,6 +164,7 @@ static int init_x11(DMenu *dm) {
   dm->dpy = XOpenDisplay(NULL); if (!dm->dpy) { fprintf(stderr, "sdmened: cannot open display\n"); return -1; }
   dm->scr = DefaultScreen(dm->dpy);
   dm->xfont = XLoadQueryFont(dm->dpy, fontstr);
+  if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "10x20");
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "9x15");
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "8x13");
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "fixed");
