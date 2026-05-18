@@ -234,8 +234,7 @@ static void create_window(DMenu *dm) {
   XineramaScreenInfo *info = XineramaQueryScreens(dm->dpy, &nmon);
   if (info) { int idx = mon>=0&&mon<nmon?mon:0; mw=info[idx].width; dm->basex=info[idx].x_org; dm->basey=info[idx].y_org; dm->monh=info[idx].height; }
   else { dm->basex=0; dm->basey=0; dm->monh=sh; }
-  if (lines > 0) dm->width = mw;
-  else { int m = 0; for (int i=0;i<dm->nitems;i++){int w=textw(dm,dm->items[i],strlen(dm->items[i]));if(w>m)m=w;} m+=dm->promptw+PAD*2; dm->width=m<mw?m:mw; }
+  dm->width = mw;
   dm->maxvis = lines>0?lines:0; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
   dm->height = dm->BH + dm->maxvis*dm->BH + BORDER*2;
   int x = dm->basex+(mw-dm->width)/2, y = topbar?dm->basey:dm->basey+dm->monh-dm->height;
@@ -287,7 +286,15 @@ static int daemon_sfd = -1;
 
 static void daemon_serve(DMenu *dm) {
   MARK("daemon listening");
-  for(;;){int cfd=accept(daemon_sfd,NULL,NULL);if(cfd<0)continue;dm->text[0]=0;dm->cursor=0;dm->sel=0;dm->top=0;create_window(dm);run(dm,cfd);destroy_window(dm);close(cfd);}
+  for(;;){
+    int cfd=accept(daemon_sfd,NULL,NULL);
+    if(cfd<0) continue;
+    dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;
+    create_window(dm);
+    run(dm,cfd);
+    destroy_window(dm);
+    close(cfd);
+  }
 }
 
 static void usage(void) {
