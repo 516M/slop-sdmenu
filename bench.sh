@@ -4,15 +4,17 @@ cd "$DIR"
 
 make -s all 2>/dev/null
 
-echo "sdmenu benchmark — $(dirname "$0")"
-echo "=============================="
+echo "sdmenu startup benchmark"
+echo "========================"
 echo ""
 
-if [ -f ~/.cache/sdmenu_items ]; then
-  nitems=$(wc -l < ~/.cache/sdmenu_items)
-  echo "== daemon startup (cached, no X) =="
-  SDMENU_BENCH=1 DISPLAY=:99 timeout 3 \
-    sh -c '"$0" "$@"' "$DIR/sdmened" 2>&1 | grep -v "^Command" | grep .
-else
-  echo "(run sdmenu first to generate cache)"
-fi
+# Fresh cache benchmark
+rm -f ~/.cache/sdmenu_items
+echo "--- first startup (no cache) ---"
+SDMENU_BENCH=1 DISPLAY=:99 timeout 3 \
+  sh -c '"$0" "$@"' "$DIR/sdmened" 2>&1 | grep -v "^Command" | grep "ms\|us"
+
+echo ""
+echo "--- cached startup ---"
+SDMENU_BENCH=1 DISPLAY=:99 timeout 3 \
+  sh -c '"$0" "$@"' "$DIR/sdmened" 2>&1 | grep -v "^Command" | grep "ms\|us"

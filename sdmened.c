@@ -288,7 +288,6 @@ static int cmpstr(const void *a, const void *b) { return strcmp(*(const char**)a
 
 static void sort_items(DMenu *dm) {
   if (dm->nitems == 0) return;
-  // Sort indices
   int *idx = malloc(dm->nitems * sizeof(int));
   for (int i = 0; i < dm->nitems; i++) idx[i] = i;
   for (int i = 0; i < dm->nitems; i++)
@@ -298,7 +297,7 @@ static void sort_items(DMenu *dm) {
   char **npaths = dm->paths ? malloc(dm->nitems * sizeof(char*)) : NULL;
   for (int i = 0; i < dm->nitems; i++) {
     nitems[i] = dm->items[idx[i]];
-    if (npaths) npaths[i] = dm->paths[idx[i]];
+    if (npaths) npaths[i] = dm->paths ? dm->paths[idx[i]] : NULL;
   }
   free(dm->items); dm->items = nitems;
   if (npaths) { free(dm->paths); dm->paths = npaths; }
@@ -308,8 +307,7 @@ static void sort_items(DMenu *dm) {
 static void gen_items(DMenu *dm) {
   char *path = getenv("PATH"); if(!path)return;
   char b[4096]; strncpy(b,path,sizeof(b)-1); b[sizeof(b)-1]=0; char *d=b;
-  dm->paths = calloc(MAX_ITEMS, sizeof(char*));
-  while(d&&*d){char*n=strchr(d,':');if(n)*n++=0; DIR*dir=opendir(d);if(dir){struct dirent*e;while((e=readdir(dir))&&dm->nitems<MAX_ITEMS){if(e->d_name[0]=='.')continue;char f[4096];snprintf(f,sizeof(f),"%s/%s",d,e->d_name);struct stat st;if(stat(f,&st)==0&&S_ISREG(st.st_mode)&&(st.st_mode&S_IXUSR)){int dp=0;for(int i=0;i<dm->nitems;i++)if(strcmp(dm->items[i],e->d_name)==0){dp=1;break;}if(!dp){dm->items[dm->nitems]=strdup(e->d_name);char*rp=realpath(f,NULL);dm->paths[dm->nitems]=rp?rp:strdup(f);dm->nitems++;}}}closedir(dir);}d=n;}
+  while(d&&*d){char*n=strchr(d,':');if(n)*n++=0; DIR*dir=opendir(d);if(dir){struct dirent*e;while((e=readdir(dir))&&dm->nitems<MAX_ITEMS){if(e->d_name[0]=='.')continue;char f[4096];snprintf(f,sizeof(f),"%s/%s",d,e->d_name);struct stat st;if(stat(f,&st)==0&&S_ISREG(st.st_mode)&&(st.st_mode&S_IXUSR)){int dp=0;for(int i=0;i<dm->nitems;i++)if(strcmp(dm->items[i],e->d_name)==0){dp=1;break;}if(!dp)dm->items[dm->nitems++]=strdup(e->d_name);}}closedir(dir);}d=n;}
   sort_items(dm);
 }
 
@@ -342,6 +340,28 @@ static int alive(void) {
 
 static int daemon_sfd = -1;
 
+static int icons_loaded = 0;
+static int paths_resolved = 0;
+
+static void resolve_paths(DMenu *dm) {
+  if (paths_resolved || !dm->paths) return;
+  for (int i = 0; i < dm->nitems; i++) {
+    if (!dm->paths[i]) {
+      // Search PATH for this item
+      char *path = getenv("PATH"); if (!path) break;
+      char b[4096]; strncpy(b,path,sizeof(b)-1); b[sizeof(b)-1]=0;
+      char *d = b;
+      while (d && *d) {
+        char *n = strchr(d, ':'); if (n) *n++ = 0;
+        char f[4096]; snprintf(f,sizeof(f),"%s/%s",d,dm->items[i]);
+        if (access(f, X_OK) == 0) { char *rp = realpath(f, NULL); dm->paths[i] = rp ? rp : strdup(f); break; }
+        d = n;
+      }
+    }
+  }
+  paths_resolved = 1;
+}
+
 static void daemon_serve(DMenu *dm) {
   for(;;){
     int cfd=accept(daemon_sfd,NULL,NULL);
@@ -349,6 +369,8 @@ static void daemon_serve(DMenu *dm) {
     char mode_byte = 'd';
     read(cfd, &mode_byte, 1);
     dm->rofi_mode = (mode_byte == 'r');
+    if (dm->rofi_mode && !icons_loaded) { load_icons(dm); icons_loaded = 1; }
+    if (dm->rofi_mode && !paths_resolved) { resolve_paths(dm); }
     dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;
     if (dm->rofi_mode) dm->maxvis = dm->nitems < 40 ? dm->nitems : 40;
     create_window(dm);
@@ -391,8 +413,8 @@ int main(int argc, char **argv) {
 
   dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));
   read_items(&dm);if(dm.nitems==0)return 1;MARK("items read from stdin");
+  dm.paths=calloc(MAX_ITEMS,sizeof(char*));
   if(init_x11(&dm)<0)return 1;MARK("X11 initialized");
-  load_icons(&dm);MARK("icons loaded");
   daemon_serve(&dm);
   return 0;
 }
