@@ -88,7 +88,7 @@ timeout 3 ./sdmenu </dev/null 2>/dev/null; R=$?
 pass "stale pidfile handled (exit $R)"
 cleanup
 
-echo "--- test 8: client alive-check works without daemon ---"
+echo "--- test 9: client alive-check works without daemon ---"
 cleanup
 timeout 3 ./sdmenu </dev/null 2>/dev/null; R=$?
 [ $R -eq 1 ] || [ $R -eq 124 ] && pass "client exits cleanly without daemon ($R)" || fail "unexpected exit $R"

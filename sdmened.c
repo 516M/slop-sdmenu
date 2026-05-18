@@ -368,7 +368,7 @@ static void create_window(DMenu *dm) {
   else { dm->basex=0; dm->basey=0; dm->monh=sh; }
   dm->width = mw;
   dm->maxvis = lines>0?lines:0; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
-  if (dm->rofi_mode && dm->BH < ICON_SIZE + 2) dm->BH = ICON_SIZE + 2;
+  if (dm->BH < ICON_SIZE + 2) dm->BH = ICON_SIZE + 2;
   dm->height = dm->BH + dm->maxvis*dm->BH;
   int x = dm->basex+(mw-dm->width)/2, y = topbar?dm->basey:dm->basey+dm->monh-dm->height;
   if (info) XFree(info);
