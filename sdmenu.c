@@ -14,6 +14,7 @@
 #include <signal.h>
 #include <errno.h>
 #include <dirent.h>
+#include <sys/stat.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -477,7 +478,101 @@ static void destroy_window(DMenu *dm) {
   XDestroyWindow(dm->dpy, dm->win);
 }
 
+static int cmpstr(const void *a, const void *b) {
+  return strcmp(*(const char **)a, *(const char **)b);
+}
+
+static void gen_items(DMenu *dm) {
+  char *path = getenv("PATH");
+  if (!path) return;
+  char buf[4096];
+  strncpy(buf, path, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  char *dir = buf;
+  while (dir && *dir) {
+    char *next = strchr(dir, ':');
+    if (next) *next++ = '\0';
+    DIR *d = opendir(dir);
+    if (d) {
+      struct dirent *e;
+      while ((e = readdir(d)) && dm->nitems < MAX_ITEMS) {
+        if (e->d_name[0] == '.') continue;
+        char full[4096];
+        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR)) {
+          int dup = 0;
+          for (int i = 0; i < dm->nitems; i++)
+            if (strcmp(dm->items[i], e->d_name) == 0) { dup = 1; break; }
+          if (!dup)
+            dm->items[dm->nitems++] = strdup(e->d_name);
+        }
+      }
+      closedir(d);
+    }
+    dir = next;
+  }
+  qsort(dm->items, dm->nitems, sizeof(char *), cmpstr);
+}
+
+static int stdin_has_data(void) {
+  struct stat st;
+  fstat(STDIN_FILENO, &st);
+  return !S_ISCHR(st.st_mode);
+}
+
+static int cache_valid(const char *cache) {
+  struct stat cac;
+  if (stat(cache, &cac) < 0) return 0;
+  char *path = getenv("PATH");
+  if (!path) return 0;
+  char buf[4096];
+  strncpy(buf, path, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  char *dir = buf;
+  while (dir && *dir) {
+    char *next = strchr(dir, ':');
+    if (next) *next++ = '\0';
+    struct stat dirst;
+    if (stat(dir, &dirst) == 0 && dirst.st_mtime > cac.st_mtime)
+      return 0;
+    dir = next;
+  }
+  return 1;
+}
+
 static void read_items(DMenu *dm) {
+  if (!stdin_has_data()) {
+    const char *cache_home = getenv("XDG_CACHE_HOME");
+    char cache[4096];
+    if (cache_home)
+      snprintf(cache, sizeof(cache), "%s/sdmenu_items", cache_home);
+    else
+      snprintf(cache, sizeof(cache), "%s/.cache/sdmenu_items", getenv("HOME") ? getenv("HOME") : "/tmp");
+
+    if (cache_valid(cache)) {
+      FILE *fp = fopen(cache, "r");
+      if (fp) {
+        char line[4096];
+        while (dm->nitems < MAX_ITEMS && fgets(line, sizeof(line), fp)) {
+          int l = strlen(line);
+          if (l > 0 && line[l - 1] == '\n') line[l - 1] = '\0';
+          if (strlen(line) > 0)
+            dm->items[dm->nitems++] = strdup(line);
+        }
+        fclose(fp);
+        if (dm->nitems > 0) return;
+      }
+    }
+    gen_items(dm);
+    FILE *fp = fopen(cache, "w");
+    if (fp) {
+      for (int i = 0; i < dm->nitems; i++)
+        fprintf(fp, "%s\n", dm->items[i]);
+      fclose(fp);
+    }
+    return;
+  }
   char line[4096];
   while (dm->nitems < MAX_ITEMS && fgets(line, sizeof(line), stdin)) {
     int l = strlen(line);

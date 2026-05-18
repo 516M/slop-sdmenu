@@ -4,14 +4,9 @@ cd "$DIR"
 
 make -s sdmenu 2>/dev/null
 
-items="/tmp/sdmenu_bench_items"
-dmenu_path > "$items" 2>/dev/null
-nitems=$(wc -l < "$items")
-
-echo "sdmenu benchmark — $nitems items"
-echo "=============================="
+echo "sdmenu benchmark"
+echo "================"
 echo ""
-
-echo "== startup + match speed (no X needed) =="
-SDMENU_BENCH=1 DISPLAY=:99 timeout 2 \
-  sh -c 'cat '"$items"' | '"$DIR"'/sdmenu -l 10' 2>&1 | grep -v "^Command" | grep .
+echo "== startup + match speed =="
+SDMENU_BENCH=1 DISPLAY=:99 timeout 3 \
+  sh -c '"$0" -l 10' "$DIR/sdmenu" 2>&1 | grep -v "^Command" | grep .
