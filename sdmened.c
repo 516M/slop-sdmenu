@@ -100,9 +100,12 @@ static void draw(DMenu *dm) {
     int hx = cx + 4;
     for (int i = 0; i < dm->nmatches && hx < dm->width - PAD; i++) {
       int idx = dm->matches[i];
-      if (i == dm->sel) { XSetForeground(dm->dpy, dm->gc, dm->selbg_p); XFillRectangle(dm->dpy, dm->win, dm->gc, hx - 1, 0, textw(dm, dm->items[idx], strlen(dm->items[idx])) + 2, dm->BH); }
-      XftDrawStringUtf8(dm->xdraw, (i==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, hx, dm->xfont->ascent + 1, (const FcChar8*)dm->items[idx], strlen(dm->items[idx]));
-      hx += textw(dm, dm->items[idx], strlen(dm->items[idx])) + 8;
+      int iw = 0;
+      if (dm->icons && dm->icons[idx].loaded) { iw = ICON_SIZE + 2; XCopyArea(dm->dpy, dm->icons[idx].pixmap, dm->win, dm->gc, 0, 0, ICON_SIZE, ICON_SIZE, hx, (dm->BH - ICON_SIZE) / 2); }
+      int tw = textw(dm, dm->items[idx], strlen(dm->items[idx]));
+      if (i == dm->sel) { XSetForeground(dm->dpy, dm->gc, dm->selbg_p); XFillRectangle(dm->dpy, dm->win, dm->gc, hx - 1, 0, iw + tw + 2, dm->BH); }
+      XftDrawStringUtf8(dm->xdraw, (i==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, hx + iw, dm->xfont->ascent + 1, (const FcChar8*)dm->items[idx], strlen(dm->items[idx]));
+      hx += iw + tw + 8;
     }
   }
 
@@ -371,6 +374,7 @@ static void daemon_serve(DMenu *dm) {
     dm->rofi_mode = (mode_byte == 'r');
     if (dm->rofi_mode && !icons_loaded) { load_icons(dm); icons_loaded = 1; }
     if (dm->rofi_mode && !paths_resolved) { resolve_paths(dm); }
+    if (!icons_loaded) { load_icons(dm); icons_loaded = 1; }
     dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;
     if (dm->rofi_mode) dm->maxvis = dm->nitems < 40 ? dm->nitems : 40;
     create_window(dm);
