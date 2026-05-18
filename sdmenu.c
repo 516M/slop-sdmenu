@@ -13,12 +13,14 @@
 #include <sys/un.h>
 #include <signal.h>
 #include <errno.h>
+#include <dirent.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
 #define PAD 4
 #define BORDER 2
 #define SOCK_PATH "/tmp/sdmened.sock"
+#define ICON_SIZE 24
 
 static char *fontstr = "9x15";
 static char *prompt = "";
@@ -44,6 +46,11 @@ static long ms(void) {
   fprintf(stderr, "  %3ld ms  %s\n", ms() - t0, msg); } while (0)
 
 typedef struct {
+  Pixmap pixmap;
+  int loaded;
+} Icon;
+
+typedef struct {
   char **items;
   int nitems;
   int *matches;
@@ -56,7 +63,8 @@ typedef struct {
   int height;
   int promptw;
   int maxvis;
-  int fw, fh;
+  int fw, fh, BH;
+  Icon *icons;
   Display *dpy;
   Window win;
   GC gc;
@@ -114,17 +122,25 @@ static void draw(DMenu *dm) {
   int cx = PAD + dm->promptw + textw(dm, dm->text, dm->cursor);
   XFillRectangle(dm->dpy, dm->win, dm->gc, cx, 1, 2, dm->fh - 2);
 
+  int textoff = PAD + ICON_SIZE + 4;
   for (int i = 0; i < mh; i++) {
     int idx = dm->top + i;
-    int y = dm->fh + i * dm->fh;
+    int y = dm->BH + i * dm->BH;
+    int ty = y + (dm->BH + dm->xfont->ascent - dm->xfont->descent) / 2;
+
     if (idx == dm->sel) {
       XSetForeground(dm->dpy, dm->gc, dm->selbg_p);
-      XFillRectangle(dm->dpy, dm->win, dm->gc, 0, y, dm->width, dm->fh);
+      XFillRectangle(dm->dpy, dm->win, dm->gc, 0, y, dm->width, dm->BH);
       XSetForeground(dm->dpy, dm->gc, dm->selfg_p);
     } else {
       XSetForeground(dm->dpy, dm->gc, dm->normfg_p);
     }
-    XDrawString(dm->dpy, dm->win, dm->gc, PAD, y + dm->xfont->ascent + 1,
+
+    if (dm->icons && dm->icons[dm->matches[idx]].loaded)
+      XCopyArea(dm->dpy, dm->icons[dm->matches[idx]].pixmap, dm->win, dm->gc,
+        0, 0, ICON_SIZE, ICON_SIZE, PAD, y + (dm->BH - ICON_SIZE) / 2);
+
+    XDrawString(dm->dpy, dm->win, dm->gc, textoff, ty,
       dm->items[dm->matches[idx]], strlen(dm->items[dm->matches[idx]]));
   }
 }
@@ -266,6 +282,8 @@ static int init_x11(DMenu *dm) {
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "fixed");
   dm->fw = dm->xfont->max_bounds.width;
   dm->fh = dm->xfont->ascent + dm->xfont->descent;
+  dm->BH = dm->fh + 4;
+  if (dm->BH < ICON_SIZE + 4) dm->BH = ICON_SIZE + 4;
   dm->cmap = DefaultColormap(dm->dpy, dm->scr);
   XColor xc, unused;
   XAllocNamedColor(dm->dpy, dm->cmap, normfg, &xc, &unused);
@@ -280,14 +298,156 @@ static int init_x11(DMenu *dm) {
   return 0;
 }
 
+static Pixmap ppm_to_pixmap(DMenu *dm, const char *path) {
+  char cmd[4096];
+  snprintf(cmd, sizeof(cmd), "convert '%s' -resize %dx%d ppm:- 2>/dev/null", path, ICON_SIZE, ICON_SIZE);
+  FILE *fp = popen(cmd, "r");
+  if (!fp) return 0;
+  char buf[256];
+  if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; }
+  if (buf[0] != 'P' || buf[1] != '6') { pclose(fp); return 0; }
+  do { if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; } } while (buf[0] == '#');
+  int w, h;
+  sscanf(buf, "%d %d", &w, &h);
+  if (!fgets(buf, sizeof(buf), fp)) { pclose(fp); return 0; }
+  int rowbytes = w * 3;
+  unsigned char *rgb = malloc(h * rowbytes);
+  for (int y = 0; y < h; y++) {
+    if (fread(rgb + y * rowbytes, 1, rowbytes, fp) != (size_t)rowbytes) {
+      free(rgb); pclose(fp); return 0;
+    }
+  }
+  pclose(fp);
+  int depth = DefaultDepth(dm->dpy, dm->scr);
+  Visual *vis = DefaultVisual(dm->dpy, dm->scr);
+  XImage *img = XCreateImage(dm->dpy, vis, depth, ZPixmap, 0, NULL, w, h, 32, 0);
+  if (!img) { free(rgb); return 0; }
+  img->data = calloc(h, img->bytes_per_line);
+  for (int y = 0; y < h; y++)
+    for (int x = 0; x < w; x++) {
+      unsigned char r = rgb[(y * w + x) * 3];
+      unsigned char g = rgb[(y * w + x) * 3 + 1];
+      unsigned char b = rgb[(y * w + x) * 3 + 2];
+      unsigned long pixel = 0;
+      if (depth == 24 || depth == 32)
+        pixel = (r << 16) | (g << 8) | b;
+      else if (depth == 16)
+        pixel = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+      else if (depth == 8)
+        pixel = ((r >> 5) << 5) | ((g >> 5) << 2) | (b >> 6);
+      long dst = y * img->bytes_per_line + x * (img->bits_per_pixel / 8);
+      if (img->byte_order == LSBFirst) {
+        img->data[dst] = pixel & 0xFF;
+        if (img->bits_per_pixel >= 16) img->data[dst+1] = (pixel >> 8) & 0xFF;
+        if (img->bits_per_pixel >= 24) img->data[dst+2] = (pixel >> 16) & 0xFF;
+        if (img->bits_per_pixel >= 32) img->data[dst+3] = 0;
+      } else {
+        if (img->bits_per_pixel >= 24) img->data[dst] = (pixel >> 16) & 0xFF;
+        if (img->bits_per_pixel >= 16) img->data[dst+1] = (pixel >> 8) & 0xFF;
+        img->data[dst+2] = pixel & 0xFF;
+        if (img->bits_per_pixel >= 32) img->data[dst+3] = 0;
+      }
+    }
+  free(rgb);
+  Pixmap pm = XCreatePixmap(dm->dpy, RootWindow(dm->dpy, dm->scr), w, h, depth);
+  GC gc = XCreateGC(dm->dpy, pm, 0, NULL);
+  XPutImage(dm->dpy, pm, gc, img, 0, 0, 0, 0, w, h);
+  XFreeGC(dm->dpy, gc);
+  free(img->data);
+  img->data = NULL;
+  XDestroyImage(img);
+  return pm;
+}
+
+static void load_icons(DMenu *dm) {
+  dm->icons = calloc(dm->nitems, sizeof(Icon));
+  DIR *dir = opendir("/run/current-system/sw/share/applications");
+  if (!dir) return;
+  struct dirent *entry;
+  int ndesk = 0;
+  char **desk_names = NULL;
+  char **desk_icons = NULL;
+  while ((entry = readdir(dir))) {
+    int l = strlen(entry->d_name);
+    if (l < 9 || strcmp(entry->d_name + l - 8, ".desktop") != 0) continue;
+    char path[4096];
+    snprintf(path, sizeof(path), "/run/current-system/sw/share/applications/%s", entry->d_name);
+    FILE *fp = fopen(path, "r");
+    if (!fp) continue;
+    char *icon = NULL, *name = NULL;
+    char line[1024];
+    while (fgets(line, sizeof(line), fp)) {
+      if (strncmp(line, "Icon=", 5) == 0) {
+        free(icon);
+        icon = strdup(line + 5);
+        char *nl = strchr(icon, '\n');
+        if (nl) *nl = '\0';
+      }
+      if (strncmp(line, "Name=", 5) == 0 && !name) {
+        name = strdup(line + 5);
+        char *nl = strchr(name, '\n');
+        if (nl) *nl = '\0';
+      }
+    }
+    fclose(fp);
+    if (!icon) { free(name); continue; }
+    char basename[256];
+    strncpy(basename, entry->d_name, l - 8);
+    basename[l - 8] = '\0';
+    desk_names = realloc(desk_names, (ndesk + 1) * sizeof(char *));
+    desk_icons = realloc(desk_icons, (ndesk + 1) * sizeof(char *));
+    desk_names[ndesk] = strdup(basename);
+    desk_icons[ndesk] = icon;
+    ndesk++;
+    free(name);
+  }
+  closedir(dir);
+
+  if (ndesk == 0) return;
+  for (int i = 0; i < dm->nitems; i++) {
+    const char *cmd = dm->items[i];
+    int found = 0;
+    for (int d = 0; d < ndesk; d++) {
+      if (strcmp(cmd, desk_names[d]) == 0) { found = 1; }
+      else {
+        int nl = strlen(desk_names[d]);
+        if (nl > (int)strlen(cmd)) nl = strlen(cmd);
+        if (strncmp(cmd, desk_names[d], nl) == 0 && cmd[nl] == '\0') found = 1;
+      }
+      if (found) {
+        char sizes[][8] = {"48x48", "32x32", "24x24", "64x64", "96x96", "128x128"};
+        for (int s = 0; s < 6; s++) {
+          char ipath[4096];
+          snprintf(ipath, sizeof(ipath),
+            "/run/current-system/sw/share/icons/hicolor/%s/apps/%s.png",
+            sizes[s], desk_icons[d]);
+          FILE *test = fopen(ipath, "r");
+          if (test) {
+            fclose(test);
+            Pixmap pm = ppm_to_pixmap(dm, ipath);
+            if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+            break;
+          }
+        }
+        break;
+      }
+    }
+  }
+  for (int d = 0; d < ndesk; d++) {
+    free(desk_names[d]);
+    free(desk_icons[d]);
+  }
+  free(desk_names);
+  free(desk_icons);
+}
+
 static void create_window(DMenu *dm) {
-  int BH = dm->fh + 4;
   int sw = DisplayWidth(dm->dpy, dm->scr);
   int sh = DisplayHeight(dm->dpy, dm->scr);
   dm->width = sw;
-  dm->maxvis = lines > 0 ? lines : (sh - BH) / BH;
+  dm->maxvis = lines > 0 ? lines : (sh - dm->BH) / dm->BH;
   if (dm->maxvis > dm->nitems) dm->maxvis = dm->nitems;
-  dm->height = BH + dm->maxvis * BH + BORDER * 2;
+  dm->height = dm->BH + dm->maxvis * dm->BH + BORDER * 2;
 
   int nmon;
   XineramaScreenInfo *info = XineramaQueryScreens(dm->dpy, &nmon);
@@ -436,6 +596,8 @@ int main(int argc, char **argv) {
   MARK("X11 initialized");
 
   if (daemon_mode) {
+    load_icons(&dm);
+    MARK("icons loaded");
     daemon_serve(&dm);
     return 0;
   }
@@ -446,8 +608,13 @@ int main(int argc, char **argv) {
 
   destroy_window(&dm);
   XCloseDisplay(dm.dpy);
-  for (int i = 0; i < dm.nitems; i++) free(dm.items[i]);
+  for (int i = 0; i < dm.nitems; i++) {
+    if (dm.icons && dm.icons[i].loaded)
+      XFreePixmap(dm.dpy, dm.icons[i].pixmap);
+    free(dm.items[i]);
+  }
   free(dm.items);
   free(dm.matches);
+  free(dm.icons);
   return dm.sel >= 0 ? 0 : 1;
 }
