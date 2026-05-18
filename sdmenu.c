@@ -168,6 +168,7 @@ static void run(DMenu *dm, int out_fd) {
 
   matchanddraw(dm);
   XFlush(dm->dpy);
+  XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
 
   while (1) {
     XNextEvent(dm->dpy, &ev);
@@ -267,6 +268,8 @@ static void run(DMenu *dm, int out_fd) {
     }
   }
 done:
+  XUngrabKeyboard(dm->dpy, CurrentTime);
+  XSync(dm->dpy, False);
   if (dm->sel >= 0 && dm->sel < dm->nmatches) {
     const char *s = dm->items[dm->matches[dm->sel]];
     write(out_fd, s, strlen(s) + 1);
@@ -494,8 +497,6 @@ static void create_window(DMenu *dm) {
   dm->gc = XCreateGC(dm->dpy, dm->win, 0, NULL);
   XSetFont(dm->dpy, dm->gc, dm->xfont->fid);
   XMapRaised(dm->dpy, dm->win);
-  XRaiseWindow(dm->dpy, dm->win);
-  XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
 }
 
 static void destroy_window(DMenu *dm) {
