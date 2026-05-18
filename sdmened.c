@@ -189,7 +189,7 @@ static void run(DMenu *dm, int out_fd) {
   XUngrabKeyboard(dm->dpy, CurrentTime); XSync(dm->dpy, False);
   if (prev_focus != None && prev_focus != PointerRoot)
     XSetInputFocus(dm->dpy, prev_focus, RevertToParent, CurrentTime);
-  if (dm->sel >= 0 && dm->sel < dm->nmatches) write(out_fd, dm->items[dm->matches[dm->sel]], strlen(dm->items[dm->matches[dm->sel]]) + 1);
+  if (dm->sel >= 0 && dm->sel < dm->nmatches) { const char *_s = dm->items[dm->matches[dm->sel]]; (void)!(write(out_fd, _s, strlen(_s) + 1)); }
   if (benchmark) fprintf(stderr, "  %3ld ms  total match time\n", matchtime);
 }
 
@@ -523,8 +523,7 @@ static void daemon_serve(DMenu *dm) {
   for(;;){
     int cfd=accept(daemon_sfd,NULL,NULL);
     if(cfd<0) continue;
-    char mode_byte = 'd';
-    read(cfd, &mode_byte, 1);
+    char mode_byte = 'd'; (void)!(read(cfd, &mode_byte, 1));
     dm->rofi_mode = (mode_byte == 'r');
     if (dm->rofi_mode && !paths_resolved) { resolve_paths(dm); }
     dm->text[0]=0; dm->cursor=0; dm->sel=0; dm->top=0;

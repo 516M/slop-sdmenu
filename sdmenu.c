@@ -60,7 +60,7 @@ int main(int argc, char **argv) {
   if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return 1; }
 
   signal(SIGPIPE, SIG_IGN);
-  write(fd, rofi_mode ? "r" : "d", 1);
+  (void)!(write(fd, rofi_mode ? "r" : "d", 1));
   struct pollfd pfd = { .fd = fd, .events = POLLIN };
   char result[4096];
   int n = 0;
