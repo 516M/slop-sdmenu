@@ -216,8 +216,16 @@ usage() {
   echo "  help        Show this message"
 }
 
-case "${1:-help}" in
-  build|release|bench|run|daemon|clean|purge|status|help) "$@" ;;
+case "${1:-}" in
+  build) build ;;
+  release) release ;;
+  bench) bench ;;
+  run) shift; run "$@" ;;
+  daemon) daemon ;;
+  clean) clean ;;
+  purge) purge ;;
+  status) status ;;
   test) test_cmd ;;
+  ""|help) usage ;;
   *) echo "Unknown command: $1"; usage; exit 1 ;;
 esac
