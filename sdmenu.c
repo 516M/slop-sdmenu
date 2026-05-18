@@ -494,6 +494,8 @@ static void create_window(DMenu *dm) {
   dm->gc = XCreateGC(dm->dpy, dm->win, 0, NULL);
   XSetFont(dm->dpy, dm->gc, dm->xfont->fid);
   XMapRaised(dm->dpy, dm->win);
+  XRaiseWindow(dm->dpy, dm->win);
+  XGrabKeyboard(dm->dpy, dm->win, False, GrabModeAsync, GrabModeAsync, CurrentTime);
 }
 
 static void destroy_window(DMenu *dm) {
