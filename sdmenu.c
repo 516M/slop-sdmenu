@@ -8,7 +8,6 @@
 #include <string.h>
 #include <ctype.h>
 #include <locale.h>
-#include <unistd.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -38,6 +37,8 @@ typedef struct {
   int top;
   int width;
   int height;
+  int promptw;
+  int maxvis;
   Display *dpy;
   Window win;
   GC gc;
@@ -76,58 +77,52 @@ static void match(DMenu *dm) {
 }
 
 static void draw(DMenu *dm) {
-  int sh = DisplayHeight(dm->dpy, dm->scr);
-  int mh = lines > 0 ? lines : (sh - BH) / BH;
+  int mh = dm->maxvis;
   if (mh > dm->nmatches) mh = dm->nmatches;
-
-  int newh = BH + mh * BH + BORDER * 2;
-  if (newh != dm->height) {
-    dm->height = newh;
-    int dy = topbar ? dm->basey : dm->basey + dm->monh - dm->height;
-    XMoveResizeWindow(dm->dpy, dm->win, dm->basex, dy, dm->width, dm->height);
-  }
 
   if (dm->sel >= dm->top + mh) dm->top = dm->sel - mh + 1;
   if (dm->sel < dm->top) dm->top = dm->sel;
 
-  XClearWindow(dm->dpy, dm->win);
+  XSetForeground(dm->dpy, dm->gc, dm->normbg_c.pixel);
+  XFillRectangle(dm->dpy, dm->win, dm->gc, 0, 0, dm->width, dm->height);
 
-  int cy = BH;
-  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD, BH - 6,
+  int ny = BH - 6;
+  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD, ny,
     (const FcChar8 *)prompt, strlen(prompt));
   XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont,
-    PAD + textw(dm, prompt, strlen(prompt)), BH - 6,
+    PAD + dm->promptw, ny,
     (const FcChar8 *)dm->text, strlen(dm->text));
 
-  int cx = PAD + textw(dm, prompt, strlen(prompt)) + textw(dm, dm->text, dm->cursor);
-  XSetForeground(dm->dpy, dm->gc, dm->normfg_c.pixel);
+  int cx = PAD + dm->promptw + textw(dm, dm->text, dm->cursor);
   XFillRectangle(dm->dpy, dm->win, dm->gc, cx, 3, 2, BH - 6);
 
   for (int i = 0; i < mh; i++) {
     int idx = dm->top + i;
-    int y = cy + i * BH;
-    int isel = (idx == dm->sel);
-    if (isel) {
+    int y = BH + i * BH;
+    if (idx == dm->sel) {
       XSetForeground(dm->dpy, dm->gc, dm->selbg_c.pixel);
       XFillRectangle(dm->dpy, dm->win, dm->gc, 0, y, dm->width, BH);
+      XftDrawStringUtf8(dm->xdraw, &dm->selfg_c, dm->xfont, PAD, y + BH - 6,
+        (const FcChar8 *)dm->items[dm->matches[idx]],
+        strlen(dm->items[dm->matches[idx]]));
+    } else {
+      XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD, y + BH - 6,
+        (const FcChar8 *)dm->items[dm->matches[idx]],
+        strlen(dm->items[dm->matches[idx]]));
     }
-    XftDrawStringUtf8(dm->xdraw, isel ? &dm->selfg_c : &dm->normfg_c,
-      dm->xfont, PAD, y + BH - 6,
-      (const FcChar8 *)dm->items[dm->matches[idx]],
-      strlen(dm->items[dm->matches[idx]]));
   }
 }
 
 static void matchanddraw(DMenu *dm) {
   match(dm);
   draw(dm);
+  XFlush(dm->dpy);
 }
 
 static void killword(DMenu *dm) {
   int i = dm->cursor;
   while (i > 0 && dm->text[i - 1] == ' ') i--;
   while (i > 0 && dm->text[i - 1] != ' ') i--;
-  int n = dm->cursor - i;
   memmove(dm->text + i, dm->text + dm->cursor, strlen(dm->text) - dm->cursor + 1);
   dm->cursor = i;
 }
@@ -141,7 +136,7 @@ static void run(DMenu *dm) {
 
   while (1) {
     XNextEvent(dm->dpy, &ev);
-    if (ev.type == Expose) { draw(dm); continue; }
+    if (ev.type == Expose) { draw(dm); XFlush(dm->dpy); continue; }
     if (ev.type != KeyPress) continue;
 
     int len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
@@ -152,7 +147,7 @@ static void run(DMenu *dm) {
     if (ks == XK_Tab || ks == XK_Down || ks == XK_KP_Down) {
       if (dm->nmatches > 0) {
         dm->sel = (dm->sel + 1) % dm->nmatches;
-        draw(dm);
+        draw(dm); XFlush(dm->dpy);
       }
       continue;
     }
@@ -160,24 +155,25 @@ static void run(DMenu *dm) {
         (ks == XK_Tab && (ev.xkey.state & ShiftMask))) {
       if (dm->nmatches > 0) {
         dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches;
-        draw(dm);
+        draw(dm); XFlush(dm->dpy);
       }
       continue;
     }
 
     if (ks == XK_Left || ks == XK_KP_Left) {
-      if (dm->cursor > 0) dm->cursor--;
-      draw(dm); continue;
+      if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); }
+      continue;
     }
     if (ks == XK_Right || ks == XK_KP_Right) {
-      if (dm->cursor < (int)strlen(dm->text)) dm->cursor++;
-      draw(dm); continue;
+      int l = strlen(dm->text);
+      if (dm->cursor < l) { dm->cursor++; draw(dm); XFlush(dm->dpy); }
+      continue;
     }
     if (ks == XK_Home || ks == XK_KP_Home) {
-      dm->cursor = 0; draw(dm); continue;
+      dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue;
     }
     if (ks == XK_End || ks == XK_KP_End) {
-      dm->cursor = strlen(dm->text); draw(dm); continue;
+      dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue;
     }
 
     if (ks == XK_BackSpace) {
@@ -201,8 +197,8 @@ static void run(DMenu *dm) {
     if (len > 0) {
       char c = buf[0];
       switch (c) {
-      case '\x01': dm->cursor = 0; draw(dm); continue;
-      case '\x02': if (dm->cursor > 0) dm->cursor--; draw(dm); continue;
+      case '\x01': dm->cursor = 0; draw(dm); XFlush(dm->dpy); continue;
+      case '\x02': if (dm->cursor > 0) { dm->cursor--; draw(dm); XFlush(dm->dpy); } continue;
       case '\x03': dm->sel = -1; goto done;
       case '\x04':
         if (dm->cursor < (int)strlen(dm->text)) {
@@ -211,8 +207,10 @@ static void run(DMenu *dm) {
           matchanddraw(dm);
         }
         continue;
-      case '\x05': dm->cursor = strlen(dm->text); draw(dm); continue;
-      case '\x06': if (dm->cursor < (int)strlen(dm->text)) dm->cursor++; draw(dm); continue;
+      case '\x05': dm->cursor = strlen(dm->text); draw(dm); XFlush(dm->dpy); continue;
+      case '\x06':
+        if (dm->cursor < (int)strlen(dm->text)) { dm->cursor++; draw(dm); XFlush(dm->dpy); }
+        continue;
       case '\x07': continue;
       case '\x08':
         if (dm->cursor > 0) {
@@ -223,36 +221,20 @@ static void run(DMenu *dm) {
         }
         continue;
       case '\x09':
-        if (dm->nmatches > 0) {
-          dm->sel = (dm->sel + 1) % dm->nmatches;
-          draw(dm);
-        }
+        if (dm->nmatches > 0) { dm->sel = (dm->sel + 1) % dm->nmatches; draw(dm); XFlush(dm->dpy); }
         continue;
       case '\x0a': case '\x0d': if (dm->nmatches > 0) goto done; continue;
-      case '\x0b':
-        dm->text[dm->cursor] = '\0';
-        matchanddraw(dm);
-        continue;
+      case '\x0b': dm->text[dm->cursor] = '\0'; matchanddraw(dm); continue;
       case '\x0e':
-        if (dm->nmatches > 0) {
-          dm->sel = (dm->sel + 1) % dm->nmatches;
-          draw(dm);
-        }
+        if (dm->nmatches > 0) { dm->sel = (dm->sel + 1) % dm->nmatches; draw(dm); XFlush(dm->dpy); }
         continue;
       case '\x10':
         if (dm->nmatches > 0) {
-          dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches;
-          draw(dm);
+          dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches; draw(dm); XFlush(dm->dpy);
         }
         continue;
-      case '\x15':
-        dm->text[0] = '\0'; dm->cursor = 0;
-        matchanddraw(dm);
-        continue;
-      case '\x17':
-        killword(dm);
-        matchanddraw(dm);
-        continue;
+      case '\x15': dm->text[0] = '\0'; dm->cursor = 0; matchanddraw(dm); continue;
+      case '\x17': killword(dm); matchanddraw(dm); continue;
       default:
         if (isprint((unsigned char)c)) {
           int l = strlen(dm->text);
@@ -342,13 +324,15 @@ int main(int argc, char **argv) {
   dm.selfg_c = initcolor(dm.dpy, dm.cmap, selfg);
   dm.selbg_c = initcolor(dm.dpy, dm.cmap, selbg);
 
+  dm.promptw = textw(&dm, prompt, strlen(prompt));
+
   int sw = DisplayWidth(dm.dpy, dm.scr);
   int sh = DisplayHeight(dm.dpy, dm.scr);
   dm.width = sw;
 
-  int mh = lines > 0 ? lines : (sh - BH) / BH;
-  if (mh > dm.nitems) mh = dm.nitems;
-  dm.height = BH + mh * BH + BORDER * 2;
+  dm.maxvis = lines > 0 ? lines : (sh - BH) / BH;
+  if (dm.maxvis > dm.nitems) dm.maxvis = dm.nitems;
+  dm.height = BH + dm.maxvis * BH + BORDER * 2;
 
   int nmon;
   XineramaScreenInfo *info = XineramaQueryScreens(dm.dpy, &nmon);

@@ -1,0 +1,2 @@
+#!/usr/bin/env bash
+dmenu_path 2>/dev/null | "$(cd "$(dirname "$0")" && pwd)/sdmenu" "$@" | ${SHELL:-"/bin/sh"} &
