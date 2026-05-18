@@ -89,7 +89,7 @@ static void draw(DMenu *dm) {
   XDrawString(dm->dpy, dm->win, dm->gc, PAD, by, prompt, strlen(prompt));
   XDrawString(dm->dpy, dm->win, dm->gc, PAD + dm->promptw, by, dm->text, strlen(dm->text));
   int cx = PAD + dm->promptw + textw(dm, dm->text, dm->cursor);
-  XFillRectangle(dm->dpy, dm->win, dm->gc, cx, 1, 2, dm->fh - 2);
+  XFillRectangle(dm->dpy, dm->win, dm->gc, cx, (dm->BH-dm->fh)/2+1, 2, dm->fh-2);
   int to = PAD + ICON_SIZE + 4;
   for (int i = 0; i < mh; i++) {
     int idx = dm->top + i, y = dm->BH + i * dm->BH;
@@ -169,7 +169,8 @@ static int init_x11(DMenu *dm) {
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "8x13");
   if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "fixed");
   dm->fw = dm->xfont->max_bounds.width; dm->fh = dm->xfont->ascent + dm->xfont->descent;
-  dm->BH = dm->fh + 4; if (dm->BH < ICON_SIZE + 4) dm->BH = ICON_SIZE + 4;
+  dm->BH = dm->fh + 6;
+  if (dm->BH < 24) dm->BH = 24;
   dm->cmap = DefaultColormap(dm->dpy, dm->scr);
   XColor xc, u; XAllocNamedColor(dm->dpy, dm->cmap, normfg, &xc, &u); dm->normfg_p = xc.pixel;
   XAllocNamedColor(dm->dpy, dm->cmap, normbg, &xc, &u); dm->normbg_p = xc.pixel;
