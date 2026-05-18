@@ -8,23 +8,31 @@
 #include <string.h>
 #include <ctype.h>
 #include <locale.h>
+#include <unistd.h>
 
-#define MAX_ITEMS 4096
 #define INP_MAX 512
-#define HEIGHT 24
+#define MAX_ITEMS 4096
+#define BH 26
 #define PAD 4
 #define BORDER 2
-#define FG_COLOR "#cccccc"
-#define BG_COLOR "#222222"
-#define SEL_COLOR "#444444"
-#define PROMPT "> "
+
+static char *fontstr = "monospace:size=12";
+static char *prompt = "";
+static char *normbg = "#222222";
+static char *normfg = "#bbbbbb";
+static char *selbg  = "#005577";
+static char *selfg  = "#eeeeee";
+static int lines = 0;
+static int topbar = 1;
+static int mon = -1;
+static int insensitive = 0;
 
 typedef struct {
   char **items;
   int nitems;
   int *matches;
   int nmatches;
-  char input[INP_MAX];
+  char text[INP_MAX];
   int cursor;
   int sel;
   int top;
@@ -33,71 +41,95 @@ typedef struct {
   Display *dpy;
   Window win;
   GC gc;
-  XftFont *font;
-  XftDraw *draw;
-  XftColor fgc, bgc, selc;
+  XftFont *xfont;
+  XftDraw *xdraw;
+  XftColor normfg_c, normbg_c, selfg_c, selbg_c;
   Colormap cmap;
   Visual *vis;
+  int scr;
+  int basex, basey, monh;
 } DMenu;
 
-static int strmatch(const char *s, const char *pat) {
-  while (*pat) {
-    if (tolower((unsigned char)*s) != tolower((unsigned char)*pat))
-      return 0;
-    s++; pat++;
-  }
-  return 1;
-}
-
-static void filter(DMenu *dm) {
-  dm->nmatches = 0;
-  int len = strlen(dm->input);
-  for (int i = 0; i < dm->nitems; i++) {
-    int match = 0;
-    const char *p = dm->items[i];
-    while (*p) {
-      if (strmatch(p, dm->input)) { match = 1; break; }
-      p++;
-    }
-    if (match || len == 0)
-      dm->matches[dm->nmatches++] = i;
-  }
-  if (dm->sel >= dm->nmatches) dm->sel = dm->nmatches > 0 ? dm->nmatches - 1 : 0;
-  int mh = (dm->height - HEIGHT) / (HEIGHT - 1);
-  if (dm->sel >= dm->top + mh) dm->top = dm->sel - mh + 1;
-  if (dm->sel < dm->top) dm->top = dm->sel;
-}
-
-static int textw(DMenu *dm, const char *s) {
+static int textw(DMenu *dm, const char *s, int n) {
   XGlyphInfo ext;
-  XftTextExtentsUtf8(dm->dpy, dm->font, (const FcChar8 *)s, strlen(s), &ext);
+  XftTextExtentsUtf8(dm->dpy, dm->xfont, (const FcChar8 *)s, n, &ext);
   return ext.xOff;
 }
 
+static int prefixmatch(const char *item, const char *pat) {
+  int n = strlen(pat);
+  if (n == 0) return 1;
+  if (insensitive)
+    return strncasecmp(item, pat, n) == 0;
+  return strncmp(item, pat, n) == 0;
+}
+
+static void match(DMenu *dm) {
+  dm->nmatches = 0;
+  for (int i = 0; i < dm->nitems; i++)
+    if (prefixmatch(dm->items[i], dm->text))
+      dm->matches[dm->nmatches++] = i;
+  if (dm->nmatches == 0)
+    dm->sel = 0;
+  else if (dm->sel >= dm->nmatches)
+    dm->sel = dm->nmatches - 1;
+}
+
 static void draw(DMenu *dm) {
+  int sh = DisplayHeight(dm->dpy, dm->scr);
+  int mh = lines > 0 ? lines : (sh - BH) / BH;
+  if (mh > dm->nmatches) mh = dm->nmatches;
+
+  int newh = BH + mh * BH + BORDER * 2;
+  if (newh != dm->height) {
+    dm->height = newh;
+    int dy = topbar ? dm->basey : dm->basey + dm->monh - dm->height;
+    XMoveResizeWindow(dm->dpy, dm->win, dm->basex, dy, dm->width, dm->height);
+  }
+
+  if (dm->sel >= dm->top + mh) dm->top = dm->sel - mh + 1;
+  if (dm->sel < dm->top) dm->top = dm->sel;
+
   XClearWindow(dm->dpy, dm->win);
-  int mh = (dm->height - HEIGHT) / (HEIGHT - 1);
-  int visible = dm->nmatches < mh ? dm->nmatches : mh;
 
-  // Prompt + input
-  char buf[INP_MAX + 8];
-  snprintf(buf, sizeof(buf), "%s%s", PROMPT, dm->input);
-  XftDrawStringUtf8(dm->draw, &dm->fgc, dm->font, PAD, HEIGHT - 6, (const FcChar8 *)buf, strlen(buf));
+  int cy = BH;
+  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD, BH - 6,
+    (const FcChar8 *)prompt, strlen(prompt));
+  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont,
+    PAD + textw(dm, prompt, strlen(prompt)), BH - 6,
+    (const FcChar8 *)dm->text, strlen(dm->text));
 
-  // Draw matches
-  for (int i = 0; i < visible; i++) {
+  int cx = PAD + textw(dm, prompt, strlen(prompt)) + textw(dm, dm->text, dm->cursor);
+  XSetForeground(dm->dpy, dm->gc, dm->normfg_c.pixel);
+  XFillRectangle(dm->dpy, dm->win, dm->gc, cx, 3, 2, BH - 6);
+
+  for (int i = 0; i < mh; i++) {
     int idx = dm->top + i;
-    if (idx >= dm->nmatches) break;
-    int y = HEIGHT + i * (HEIGHT - 1);
+    int y = cy + i * BH;
     int isel = (idx == dm->sel);
     if (isel) {
-      XSetForeground(dm->dpy, dm->gc, dm->selc.pixel);
-      XFillRectangle(dm->dpy, dm->win, dm->gc, 0, y - (HEIGHT - 1) + 2, dm->width, HEIGHT - 2);
+      XSetForeground(dm->dpy, dm->gc, dm->selbg_c.pixel);
+      XFillRectangle(dm->dpy, dm->win, dm->gc, 0, y, dm->width, BH);
     }
-    XftDrawStringUtf8(dm->draw, isel ? &dm->fgc : &dm->fgc, dm->font, PAD,
-                      y + HEIGHT - 8, (const FcChar8 *)dm->items[dm->matches[idx]],
-                      strlen(dm->items[dm->matches[idx]]));
+    XftDrawStringUtf8(dm->xdraw, isel ? &dm->selfg_c : &dm->normfg_c,
+      dm->xfont, PAD, y + BH - 6,
+      (const FcChar8 *)dm->items[dm->matches[idx]],
+      strlen(dm->items[dm->matches[idx]]));
   }
+}
+
+static void matchanddraw(DMenu *dm) {
+  match(dm);
+  draw(dm);
+}
+
+static void killword(DMenu *dm) {
+  int i = dm->cursor;
+  while (i > 0 && dm->text[i - 1] == ' ') i--;
+  while (i > 0 && dm->text[i - 1] != ' ') i--;
+  int n = dm->cursor - i;
+  memmove(dm->text + i, dm->text + dm->cursor, strlen(dm->text) - dm->cursor + 1);
+  dm->cursor = i;
 }
 
 static void run(DMenu *dm) {
@@ -105,76 +137,138 @@ static void run(DMenu *dm) {
   char buf[32];
   KeySym ks;
 
+  matchanddraw(dm);
+
   while (1) {
     XNextEvent(dm->dpy, &ev);
-    if (ev.type == KeyPress) {
-      int len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-      if (ks == XK_Escape) { dm->sel = -1; break; }
-      if (ks == XK_Return && dm->nmatches > 0) break;
-      if (ks == XK_Tab || ks == XK_Down) {
+    if (ev.type == Expose) { draw(dm); continue; }
+    if (ev.type != KeyPress) continue;
+
+    int len = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+
+    if (ks == XK_Escape) { dm->sel = -1; break; }
+    if ((ks == XK_Return || ks == XK_KP_Enter) && dm->nmatches > 0) break;
+
+    if (ks == XK_Tab || ks == XK_Down || ks == XK_KP_Down) {
+      if (dm->nmatches > 0) {
+        dm->sel = (dm->sel + 1) % dm->nmatches;
+        draw(dm);
+      }
+      continue;
+    }
+    if ((ks == XK_Up || ks == XK_KP_Up) ||
+        (ks == XK_Tab && (ev.xkey.state & ShiftMask))) {
+      if (dm->nmatches > 0) {
+        dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches;
+        draw(dm);
+      }
+      continue;
+    }
+
+    if (ks == XK_Left || ks == XK_KP_Left) {
+      if (dm->cursor > 0) dm->cursor--;
+      draw(dm); continue;
+    }
+    if (ks == XK_Right || ks == XK_KP_Right) {
+      if (dm->cursor < (int)strlen(dm->text)) dm->cursor++;
+      draw(dm); continue;
+    }
+    if (ks == XK_Home || ks == XK_KP_Home) {
+      dm->cursor = 0; draw(dm); continue;
+    }
+    if (ks == XK_End || ks == XK_KP_End) {
+      dm->cursor = strlen(dm->text); draw(dm); continue;
+    }
+
+    if (ks == XK_BackSpace) {
+      if (dm->cursor > 0) {
+        memmove(dm->text + dm->cursor - 1, dm->text + dm->cursor,
+          strlen(dm->text) - dm->cursor + 1);
+        dm->cursor--;
+        matchanddraw(dm);
+      }
+      continue;
+    }
+    if (ks == XK_Delete) {
+      int l = strlen(dm->text);
+      if (dm->cursor < l) {
+        memmove(dm->text + dm->cursor, dm->text + dm->cursor + 1, l - dm->cursor);
+        matchanddraw(dm);
+      }
+      continue;
+    }
+
+    if (len > 0) {
+      char c = buf[0];
+      switch (c) {
+      case '\x01': dm->cursor = 0; draw(dm); continue;
+      case '\x02': if (dm->cursor > 0) dm->cursor--; draw(dm); continue;
+      case '\x03': dm->sel = -1; goto done;
+      case '\x04':
+        if (dm->cursor < (int)strlen(dm->text)) {
+          memmove(dm->text + dm->cursor, dm->text + dm->cursor + 1,
+            strlen(dm->text) - dm->cursor);
+          matchanddraw(dm);
+        }
+        continue;
+      case '\x05': dm->cursor = strlen(dm->text); draw(dm); continue;
+      case '\x06': if (dm->cursor < (int)strlen(dm->text)) dm->cursor++; draw(dm); continue;
+      case '\x07': continue;
+      case '\x08':
+        if (dm->cursor > 0) {
+          memmove(dm->text + dm->cursor - 1, dm->text + dm->cursor,
+            strlen(dm->text) - dm->cursor + 1);
+          dm->cursor--;
+          matchanddraw(dm);
+        }
+        continue;
+      case '\x09':
         if (dm->nmatches > 0) {
           dm->sel = (dm->sel + 1) % dm->nmatches;
-          filter(dm);
           draw(dm);
         }
         continue;
-      }
-      if (ks == XK_Up) {
+      case '\x0a': case '\x0d': if (dm->nmatches > 0) goto done; continue;
+      case '\x0b':
+        dm->text[dm->cursor] = '\0';
+        matchanddraw(dm);
+        continue;
+      case '\x0e':
+        if (dm->nmatches > 0) {
+          dm->sel = (dm->sel + 1) % dm->nmatches;
+          draw(dm);
+        }
+        continue;
+      case '\x10':
         if (dm->nmatches > 0) {
           dm->sel = (dm->sel - 1 + dm->nmatches) % dm->nmatches;
-          filter(dm);
           draw(dm);
         }
         continue;
-      }
-      if (ks == XK_BackSpace) {
-        int l = strlen(dm->input);
-        if (l > 0 && dm->cursor > 0) {
-          memmove(dm->input + dm->cursor - 1, dm->input + dm->cursor, l - dm->cursor + 1);
-          dm->cursor--;
-          filter(dm);
-          draw(dm);
-        }
+      case '\x15':
+        dm->text[0] = '\0'; dm->cursor = 0;
+        matchanddraw(dm);
         continue;
-      }
-      if (ks == XK_Delete) {
-        int l = strlen(dm->input);
-        if (dm->cursor < l) {
-          memmove(dm->input + dm->cursor, dm->input + dm->cursor + 1, l - dm->cursor);
-          filter(dm);
-          draw(dm);
-        }
+      case '\x17':
+        killword(dm);
+        matchanddraw(dm);
         continue;
-      }
-      if (ks == XK_Left) {
-        if (dm->cursor > 0) dm->cursor--;
-        continue;
-      }
-      if (ks == XK_Right) {
-        if (dm->cursor < (int)strlen(dm->input)) dm->cursor++;
-        continue;
-      }
-      if (ks == XK_End) {
-        dm->cursor = strlen(dm->input);
-        continue;
-      }
-      if (ks == XK_Home) {
-        dm->cursor = 0;
-        continue;
-      }
-      if (len > 0 && isprint((unsigned char)buf[0])) {
-        int l = strlen(dm->input);
-        if (l < INP_MAX - 1) {
-          memmove(dm->input + dm->cursor + 1, dm->input + dm->cursor, l - dm->cursor + 1);
-          dm->input[dm->cursor] = buf[0];
-          dm->cursor++;
-          filter(dm);
-          draw(dm);
+      default:
+        if (isprint((unsigned char)c)) {
+          int l = strlen(dm->text);
+          if (l < INP_MAX - 1) {
+            memmove(dm->text + dm->cursor + 1, dm->text + dm->cursor,
+              l - dm->cursor + 1);
+            dm->text[dm->cursor] = c;
+            dm->cursor++;
+            matchanddraw(dm);
+          }
         }
       }
     }
-    if (ev.type == Expose) draw(dm);
   }
+done:
+  ;
 }
 
 static XftColor initcolor(Display *dpy, Colormap cmap, const char *hex) {
@@ -183,11 +277,45 @@ static XftColor initcolor(Display *dpy, Colormap cmap, const char *hex) {
   return c;
 }
 
+static void usage(void) {
+  fprintf(stderr, "usage: sdmenu [-b] [-i] [-l lines] [-m monitor] "
+    "[-p prompt] [-fn font] [-nb color] [-nf color] [-sb color] [-sf color]\n");
+  exit(1);
+}
+
 int main(int argc, char **argv) {
   setlocale(LC_CTYPE, "");
   DMenu dm = {0};
 
-  // Read items from stdin
+  for (int i = 1; i < argc; i++) {
+    if (argv[i][0] == '-')
+      switch (argv[i][1]) {
+      case 'b': topbar = 0; break;
+      case 'f': if (++i < argc) fontstr = argv[i]; break;
+      case 'i': insensitive = 1; break;
+      case 'l': if (++i < argc) lines = atoi(argv[i]); break;
+      case 'm': if (++i < argc) mon = atoi(argv[i]); break;
+      case 'p': if (++i < argc) prompt = argv[i]; break;
+      case 'n':
+        switch (argv[i][2]) {
+        case 'b': if (++i < argc) normbg = argv[i]; break;
+        case 'f': if (++i < argc) normfg = argv[i]; break;
+        default: usage();
+        }
+        break;
+      case 's':
+        switch (argv[i][2]) {
+        case 'b': if (++i < argc) selbg = argv[i]; break;
+        case 'f': if (++i < argc) selfg = argv[i]; break;
+        default: usage();
+        }
+        break;
+      default: usage();
+      }
+    else
+      usage();
+  }
+
   dm.items = malloc(MAX_ITEMS * sizeof(char *));
   dm.matches = malloc(MAX_ITEMS * sizeof(int));
   char line[4096];
@@ -199,61 +327,61 @@ int main(int argc, char **argv) {
   }
   if (dm.nitems == 0) return 1;
 
-  // Init X11
   dm.dpy = XOpenDisplay(NULL);
-  if (!dm.dpy) { fprintf(stderr, "Cannot open display\n"); return 1; }
-  int scr = DefaultScreen(dm.dpy);
-  dm.vis = DefaultVisual(dm.dpy, scr);
-  dm.cmap = DefaultColormap(dm.dpy, scr);
+  if (!dm.dpy) { fprintf(stderr, "sdmenu: cannot open display\n"); return 1; }
+  dm.scr = DefaultScreen(dm.dpy);
+  dm.vis = DefaultVisual(dm.dpy, dm.scr);
+  dm.cmap = DefaultColormap(dm.dpy, dm.scr);
 
-  // Font
-  dm.font = XftFontOpenName(dm.dpy, scr, "monospace:size=12:antialias=true");
-  if (!dm.font) dm.font = XftFontOpenName(dm.dpy, scr, "fixed:size=12");
-  if (!dm.font) { fprintf(stderr, "Cannot load font\n"); return 1; }
+  dm.xfont = XftFontOpenName(dm.dpy, dm.scr, fontstr);
+  if (!dm.xfont) dm.xfont = XftFontOpenName(dm.dpy, dm.scr, "fixed:size=12");
+  if (!dm.xfont) { fprintf(stderr, "sdmenu: cannot load font\n"); return 1; }
 
-  // Colors
-  dm.fgc = initcolor(dm.dpy, dm.cmap, FG_COLOR);
-  dm.bgc = initcolor(dm.dpy, dm.cmap, BG_COLOR);
-  dm.selc = initcolor(dm.dpy, dm.cmap, SEL_COLOR);
+  dm.normfg_c = initcolor(dm.dpy, dm.cmap, normfg);
+  dm.normbg_c = initcolor(dm.dpy, dm.cmap, normbg);
+  dm.selfg_c = initcolor(dm.dpy, dm.cmap, selfg);
+  dm.selbg_c = initcolor(dm.dpy, dm.cmap, selbg);
 
-  // Window dimensions
-  dm.width = 800;
+  int sw = DisplayWidth(dm.dpy, dm.scr);
+  int sh = DisplayHeight(dm.dpy, dm.scr);
+  dm.width = sw;
 
-  int mh = dm.nitems < 10 ? dm.nitems : 10;
-  dm.height = HEIGHT + mh * (HEIGHT - 1) + BORDER * 2;
+  int mh = lines > 0 ? lines : (sh - BH) / BH;
+  if (mh > dm.nitems) mh = dm.nitems;
+  dm.height = BH + mh * BH + BORDER * 2;
 
-  // Position on primary monitor
-  int x = 0, y = 0;
   int nmon;
   XineramaScreenInfo *info = XineramaQueryScreens(dm.dpy, &nmon);
   if (info) {
-    int w = dm.width > info[0].width ? info[0].width : dm.width;
-    x = info[0].x_org + (info[0].width - w) / 2;
-    y = info[0].y_org;
-    dm.width = w;
+    int idx = (mon >= 0 && mon < nmon) ? mon : 0;
+    dm.width = info[idx].width;
+    dm.basex = info[idx].x_org;
+    dm.basey = info[idx].y_org;
+    dm.monh = info[idx].height;
     XFree(info);
   } else {
-    dm.width = dm.width > DisplayWidth(dm.dpy, scr) ? DisplayWidth(dm.dpy, scr) : dm.width;
-    x = (DisplayWidth(dm.dpy, scr) - dm.width) / 2;
+    dm.basex = 0;
+    dm.basey = 0;
+    dm.monh = sh;
   }
+  int x = dm.basex;
+  int y = topbar ? dm.basey : dm.basey + dm.monh - dm.height;
 
-  dm.win = XCreateSimpleWindow(dm.dpy, RootWindow(dm.dpy, scr), x, y, dm.width, dm.height, BORDER,
-                               dm.fgc.pixel, dm.bgc.pixel);
+  dm.win = XCreateSimpleWindow(dm.dpy, RootWindow(dm.dpy, dm.scr),
+    x, y, dm.width, dm.height, BORDER,
+    dm.normfg_c.pixel, dm.normbg_c.pixel);
   dm.gc = XCreateGC(dm.dpy, dm.win, 0, NULL);
-  dm.draw = XftDrawCreate(dm.dpy, dm.win, dm.vis, dm.cmap);
+  dm.xdraw = XftDrawCreate(dm.dpy, dm.win, dm.vis, dm.cmap);
 
   XSelectInput(dm.dpy, dm.win, ExposureMask | KeyPressMask);
   XMapRaised(dm.dpy, dm.win);
 
-  filter(&dm);
   run(&dm);
 
-  // Output selection
   if (dm.sel >= 0 && dm.sel < dm.nmatches)
     puts(dm.items[dm.matches[dm.sel]]);
 
-  // Cleanup
-  XftDrawDestroy(dm.draw);
+  XftDrawDestroy(dm.xdraw);
   XFreeGC(dm.dpy, dm.gc);
   XDestroyWindow(dm.dpy, dm.win);
   XCloseDisplay(dm.dpy);
