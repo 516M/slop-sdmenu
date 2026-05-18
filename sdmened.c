@@ -294,35 +294,63 @@ static const char *appdirs[] = {
 
 static const char *iconsizes[] = {"48x48","32x32","24x24","64x64","96x96","128x128"};
 
+static void scan_apps_dir(const char *dirpath) {
+  DIR *dir = opendir(dirpath); if (!dir) return;
+  struct dirent *e;
+  while ((e = readdir(dir))) {
+    int l = strlen(e->d_name);
+    if (l < 9 || strcmp(e->d_name + l - 8, ".desktop")) continue;
+    char p[4096]; snprintf(p, sizeof(p), "%s/%s", dirpath, e->d_name);
+    FILE *fp = fopen(p, "r"); if (!fp) continue;
+    char *ic = NULL, *ex = NULL, ln[1024];
+    while (fgets(ln, sizeof(ln), fp)) {
+      if (strncmp(ln, "Icon=", 5) == 0) { free(ic); ic = strdup(ln+5); char *nl = strchr(ic, '\n'); if (nl) *nl = 0; }
+      if (strncmp(ln, "Exec=", 5) == 0) {
+        free(ex); ex = strdup(ln+5); char *nl = strchr(ex, '\n'); if (nl) *nl = 0;
+        char *sp = strchr(ex, ' '); if (sp) *sp = 0;
+        char *sl = strrchr(ex, '/'); if (sl) { char *tmp = strdup(sl+1); free(ex); ex = tmp; }
+      }
+    }
+    fclose(fp); if (!ic) { free(ex); continue; }
+    char bn[256]; strncpy(bn, e->d_name, l-8); bn[l-8] = 0;
+    desk_names = realloc(desk_names, (ndesk+1)*sizeof(char*));
+    desk_icons = realloc(desk_icons, (ndesk+1)*sizeof(char*));
+    desk_execs = realloc(desk_execs, (ndesk+1)*sizeof(char*));
+    desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = ic; desk_execs[ndesk] = ex ? ex : strdup(bn); ndesk++;
+  }
+  closedir(dir);
+}
+
+static void scan_appimages_dir(const char *dirpath) {
+  DIR *dir = opendir(dirpath); if (!dir) return;
+  struct dirent *e;
+  while ((e = readdir(dir))) {
+    int l = strlen(e->d_name);
+    if (l < 10 || strcasecmp(e->d_name + l - 9, ".appimage") != 0) continue;
+    char bn[256]; strncpy(bn, e->d_name, l-9); bn[l-9] = 0;
+    // Check if already registered via appimaged (has a .desktop file)
+    char dpath[4096]; snprintf(dpath, sizeof(dpath), "%s/%s.desktop", dirpath, bn);
+    if (access(dpath, F_OK) == 0) continue; // already handled by existing desktop scan
+    // Create a minimal virtual desktop entry
+    desk_names = realloc(desk_names, (ndesk+1)*sizeof(char*));
+    desk_icons = realloc(desk_icons, (ndesk+1)*sizeof(char*));
+    desk_execs = realloc(desk_execs, (ndesk+1)*sizeof(char*));
+    desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = strdup(bn); desk_execs[ndesk] = strdup(bn); ndesk++;
+  }
+  closedir(dir);
+}
+
 static void load_icons_cache(DMenu *dm) {
   if (icons_cached) return;
   dm->icons = calloc(dm->nitems, sizeof(Icon));
-  for (int ai = 0; appdirs[ai]; ai++) {
-    DIR *dir = opendir(appdirs[ai]); if (!dir) continue;
-    struct dirent *e;
-    while ((e = readdir(dir))) {
-      int l = strlen(e->d_name);
-      if (l < 9 || strcmp(e->d_name + l - 8, ".desktop")) continue;
-      char p[4096]; snprintf(p, sizeof(p), "%s/%s", appdirs[ai], e->d_name);
-      FILE *fp = fopen(p, "r"); if (!fp) continue;
-      char *ic = NULL, *ex = NULL, ln[1024];
-      while (fgets(ln, sizeof(ln), fp)) {
-        if (strncmp(ln, "Icon=", 5) == 0) { free(ic); ic = strdup(ln+5); char *nl = strchr(ic, '\n'); if (nl) *nl = 0; }
-        if (strncmp(ln, "Exec=", 5) == 0) {
-          free(ex); ex = strdup(ln+5); char *nl = strchr(ex, '\n'); if (nl) *nl = 0;
-          // Extract just the command name from Exec= (before first space, strip path)
-          char *sp = strchr(ex, ' '); if (sp) *sp = 0;
-          char *sl = strrchr(ex, '/'); if (sl) { char *tmp = strdup(sl+1); free(ex); ex = tmp; }
-        }
-      }
-      fclose(fp); if (!ic) { free(ex); continue; }
-      char bn[256]; strncpy(bn, e->d_name, l-8); bn[l-8] = 0;
-      desk_names = realloc(desk_names, (ndesk+1)*sizeof(char*));
-      desk_icons = realloc(desk_icons, (ndesk+1)*sizeof(char*));
-      desk_execs = realloc(desk_execs, (ndesk+1)*sizeof(char*));
-      desk_names[ndesk] = strdup(bn); desk_icons[ndesk] = ic; desk_execs[ndesk] = ex ? ex : strdup(bn); ndesk++;
-    }
-    closedir(dir);
+  const char *home = getenv("HOME");
+  
+  for (int ai = 0; appdirs[ai]; ai++) scan_apps_dir(appdirs[ai]);
+  if (home) {
+    char path[4096];
+    snprintf(path, sizeof(path), "%s/.local/share/applications", home); scan_apps_dir(path);
+    snprintf(path, sizeof(path), "%s/Applications", home); scan_appimages_dir(path);
+    snprintf(path, sizeof(path), "%s/AppImages", home); scan_appimages_dir(path);
   }
   if (ndesk == 0) { icons_cached = 1; icons_full = 1; return; }
   for (int i = 0; i < dm->nitems; i++) {
@@ -357,22 +385,34 @@ static void load_icons_convert(DMenu *dm) {
       );
       if (!match) continue;
       if (dm->icons && dm->icons[i].loaded) break;
-      for (int ai = 0; appdirs[ai]; ai++) {
-          for (int s = 0; s < 6; s++) {
-            char ip[4096]; snprintf(ip, sizeof(ip), "%s/../icons/hicolor/%s/apps/%s.png", appdirs[ai], iconsizes[s], desk_icons[d]);
-            struct stat st; if (stat(ip, &st) == 0) {
-              unsigned char *rgb; int w, h;
-              if (icon_load_convert(ip, desk_names[d], &rgb, &w, &h)) {
-                Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
-                if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
-                free(rgb);
-              }
-              goto icon_done;
-            }
+      for (int ai = 0; appdirs[ai]; ai++) for (int s = 0; s < 6; s++) {
+        char ip[4096]; snprintf(ip, sizeof(ip), "%s/../icons/hicolor/%s/apps/%s.png", appdirs[ai], iconsizes[s], desk_icons[d]);
+        struct stat st; if (stat(ip, &st) == 0) {
+          unsigned char *rgb; int w, h;
+          if (icon_load_convert(ip, desk_names[d], &rgb, &w, &h)) {
+            Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
+            if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+            free(rgb);
           }
+          goto icon_done;
         }
-        icon_done: break;
       }
+      // Also check user-local icon theme
+      const char *home = getenv("HOME");
+      if (home) for (int s = 0; s < 6; s++) {
+        char ip[4096]; snprintf(ip, sizeof(ip), "%s/.local/share/icons/hicolor/%s/apps/%s.png", home, iconsizes[s], desk_icons[d]);
+        struct stat st; if (stat(ip, &st) == 0) {
+          unsigned char *rgb; int w, h;
+          if (icon_load_convert(ip, desk_names[d], &rgb, &w, &h)) {
+            Pixmap pm = rgb_to_pixmap(dm, rgb, w, h);
+            if (pm) { dm->icons[i].pixmap = pm; dm->icons[i].loaded = 1; }
+            free(rgb);
+          }
+          goto icon_done;
+        }
+      }
+      icon_done: break;
+    }
   }
   icons_full = 1; MARK("icons full");
 }
