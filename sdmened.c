@@ -97,9 +97,13 @@ static void draw(DMenu *dm) {
   XFillRectangle(dm->dpy, dm->win, dm->gc, cx, (dm->BH-dm->fh)/2+1, 2, dm->fh-2);
 
   if (mh == 0 && dm->nmatches > 0) {
-    int idx = dm->sel;
-    XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, cx + 4, dm->xfont->ascent + 1,
-      (const FcChar8*)dm->items[dm->matches[idx]], strlen(dm->items[dm->matches[idx]]));
+    int hx = cx + 4;
+    for (int i = 0; i < dm->nmatches && hx < dm->width - PAD; i++) {
+      int idx = dm->matches[i];
+      if (i == dm->sel) { XSetForeground(dm->dpy, dm->gc, dm->selbg_p); XFillRectangle(dm->dpy, dm->win, dm->gc, hx - 1, 0, textw(dm, dm->items[idx], strlen(dm->items[idx])) + 2, dm->BH); }
+      XftDrawStringUtf8(dm->xdraw, (i==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, hx, dm->xfont->ascent + 1, (const FcChar8*)dm->items[idx], strlen(dm->items[idx]));
+      hx += textw(dm, dm->items[idx], strlen(dm->items[idx])) + 8;
+    }
   }
 
   int to = PAD + ICON_SIZE + 4;
