@@ -447,25 +447,40 @@ static void load_icons(DMenu *dm) {
 static void create_window(DMenu *dm) {
   int sw = DisplayWidth(dm->dpy, dm->scr);
   int sh = DisplayHeight(dm->dpy, dm->scr);
-  dm->width = sw;
+  int mw = sw;
+
+  int nmon;
+  XineramaScreenInfo *info = XineramaQueryScreens(dm->dpy, &nmon);
+  int idx = 0;
+  if (info) {
+    idx = (mon >= 0 && mon < nmon) ? mon : 0;
+    mw = info[idx].width;
+    dm->basex = info[idx].x_org;
+    dm->basey = info[idx].y_org;
+    dm->monh = info[idx].height;
+  } else {
+    dm->basex = 0; dm->basey = 0; dm->monh = sh;
+  }
+
+  if (lines > 0) {
+    dm->width = mw;
+  } else {
+    int maxw = 0;
+    for (int i = 0; i < dm->nitems; i++) {
+      int w = textw(dm, dm->items[i], strlen(dm->items[i]));
+      if (w > maxw) maxw = w;
+    }
+    maxw += dm->promptw + ICON_SIZE + PAD * 3 + 4;
+    dm->width = maxw < mw ? maxw : mw;
+  }
+
   dm->maxvis = lines > 0 ? lines : (sh - dm->BH) / dm->BH;
   if (dm->maxvis > dm->nitems) dm->maxvis = dm->nitems;
   dm->height = dm->BH + dm->maxvis * dm->BH + BORDER * 2;
 
-  int nmon;
-  XineramaScreenInfo *info = XineramaQueryScreens(dm->dpy, &nmon);
-  if (info) {
-    int idx = (mon >= 0 && mon < nmon) ? mon : 0;
-    dm->width = info[idx].width;
-    dm->basex = info[idx].x_org;
-    dm->basey = info[idx].y_org;
-    dm->monh = info[idx].height;
-    XFree(info);
-  } else {
-    dm->basex = 0; dm->basey = 0; dm->monh = sh;
-  }
-  int x = dm->basex;
+  int x = dm->basex + (mw - dm->width) / 2;
   int y = topbar ? dm->basey : dm->basey + dm->monh - dm->height;
+  if (info) XFree(info);
 
   XSetWindowAttributes wa = {0};
   wa.override_redirect = True;
