@@ -14,6 +14,7 @@
 #include <dirent.h>
 #include <sys/stat.h>
 #include <sys/prctl.h>
+#include <signal.h>
 #include <fcntl.h>
 
 #define INP_MAX 512
@@ -234,8 +235,8 @@ static void create_window(DMenu *dm) {
   if (info) { int idx = mon>=0&&mon<nmon?mon:0; mw=info[idx].width; dm->basex=info[idx].x_org; dm->basey=info[idx].y_org; dm->monh=info[idx].height; }
   else { dm->basex=0; dm->basey=0; dm->monh=sh; }
   if (lines > 0) dm->width = mw;
-  else { int m = 0; for (int i=0;i<dm->nitems;i++){int w=textw(dm,dm->items[i],strlen(dm->items[i]));if(w>m)m=w;} m+=dm->promptw+ICON_SIZE+PAD*3+4; dm->width=m<mw?m:mw; }
-  dm->maxvis = lines>0?lines:(sh-dm->BH)/dm->BH; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
+  else { int m = 0; for (int i=0;i<dm->nitems;i++){int w=textw(dm,dm->items[i],strlen(dm->items[i]));if(w>m)m=w;} m+=dm->promptw+PAD*2; dm->width=m<mw?m:mw; }
+  dm->maxvis = lines>0?lines:0; if(dm->maxvis>dm->nitems)dm->maxvis=dm->nitems;
   dm->height = dm->BH + dm->maxvis*dm->BH + BORDER*2;
   int x = dm->basex+(mw-dm->width)/2, y = topbar?dm->basey:dm->basey+dm->monh-dm->height;
   if (info) XFree(info);
@@ -277,9 +278,9 @@ static void read_items(DMenu *dm) {
 }
 
 static int alive(void) {
-  struct sockaddr_un a; a.sun_family=AF_UNIX; strcpy(a.sun_path,SOCK_PATH);
-  int fd=socket(AF_UNIX,SOCK_STREAM,0);if(fd<0)return 0;
-  int ok=(connect(fd,(struct sockaddr*)&a,sizeof(a))==0);close(fd);return ok;
+  FILE*pf=fopen("/tmp/sdmened.pid","r");if(!pf)return 0;
+  int pid; if(fscanf(pf,"%d",&pid)!=1){fclose(pf);return 0;} fclose(pf);
+  return kill(pid,0)==0;
 }
 
 static int daemon_sfd = -1;
@@ -310,6 +311,7 @@ int main(int argc, char **argv) {
     }else usage();
   }
   if(alive())return 0;
+  signal(SIGPIPE,SIG_IGN);
   prctl(PR_SET_NAME,"sdmened");
   FILE*pf=fopen("/tmp/sdmened.pid","w");if(pf){fprintf(pf,"%d\n",getpid());fclose(pf);}
   dm.items=malloc(MAX_ITEMS*sizeof(char*));dm.matches=malloc(MAX_ITEMS*sizeof(int));

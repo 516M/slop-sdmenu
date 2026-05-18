@@ -4,19 +4,22 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <signal.h>
 #include <fcntl.h>
 
 #define SOCK_PATH "/tmp/sdmened.sock"
+#define PID_PATH "/tmp/sdmened.pid"
 
 static int alive(void) {
-  struct sockaddr_un addr;
-  addr.sun_family = AF_UNIX;
-  strcpy(addr.sun_path, SOCK_PATH);
-  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-  if (fd < 0) return 0;
-  int ok = (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) == 0);
-  close(fd);
-  return ok;
+  FILE *pf = fopen(PID_PATH, "r");
+  if (!pf) return 0;
+  int pid;
+  if (fscanf(pf, "%d", &pid) != 1) { fclose(pf); return 0; }
+  fclose(pf);
+  if (kill(pid, 0) == 0) return 1;
+  unlink(SOCK_PATH);
+  unlink(PID_PATH);
+  return 0;
 }
 
 int main(int argc, char **argv) {
@@ -32,7 +35,6 @@ int main(int argc, char **argv) {
         dir = self;
       }
     }
-
     pid_t pid = fork();
     if (pid == 0) {
       setsid();
@@ -62,6 +64,7 @@ int main(int argc, char **argv) {
   int fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (fd < 0) return 1;
   if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { close(fd); return 1; }
+  signal(SIGPIPE, SIG_IGN);
   char result[4096];
   int n = read(fd, result, sizeof(result) - 1);
   close(fd);
