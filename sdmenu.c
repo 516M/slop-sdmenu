@@ -15,6 +15,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <sys/stat.h>
+#include <sys/prctl.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -685,6 +686,12 @@ int main(int argc, char **argv) {
         tests[t][0] ? tests[t] : "(empty)", matchtime * 1000 / nruns,
         dm.nmatches, dm.nitems, nruns);
     }
+  }
+
+  if (daemon_mode) {
+    prctl(PR_SET_NAME, "sdmened");
+    FILE *pf = fopen("/tmp/sdmened.pid", "w");
+    if (pf) { fprintf(pf, "%d\n", getpid()); fclose(pf); }
   }
 
   if (init_x11(&dm) < 0) return 1;
