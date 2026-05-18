@@ -1,4 +1,5 @@
 #include <X11/Xlib.h>
+#include <X11/Xft/Xft.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <X11/extensions/Xinerama.h>
@@ -24,7 +25,7 @@
 #define SOCK_PATH "/tmp/sdmened.sock"
 #define ICON_SIZE 24
 
-static char *fontstr = "9x15";
+static char *fontstr = "Inconsolata LGC Markup:bold:size=14";
 static char *prompt = ">";
 static char *normbg = "#0d0d0d";
 static char *normfg = "#c8c8c8";
@@ -53,12 +54,15 @@ typedef struct {
   int width; int height; int promptw; int maxvis;
   int fw, fh, BH; Icon *icons;
   Display *dpy; Window win; GC gc;
-  XFontStruct *xfont;
+  XftFont *xfont; XftDraw *xdraw;
+  XftColor normfg_c, normbg_c, selfg_c, selbg_c;
   unsigned long normfg_p, normbg_p, selfg_p, selbg_p;
   Colormap cmap; int scr; int basex, basey, monh;
 } DMenu;
 
-static int textw(DMenu *dm, const char *s, int n) { return XTextWidth(dm->xfont, s, n); }
+static int textw(DMenu *dm, const char *s, int n) {
+  XGlyphInfo e; XftTextExtentsUtf8(dm->dpy, dm->xfont, (const FcChar8*)s, n, &e); return e.xOff;
+}
 
 static int prefixmatch(const char *item, const char *pat) {
   int n = strlen(pat);
@@ -83,11 +87,10 @@ static void draw(DMenu *dm) {
   if (dm->sel < dm->top) dm->top = dm->sel;
   XSetForeground(dm->dpy, dm->gc, dm->normbg_p);
   XFillRectangle(dm->dpy, dm->win, dm->gc, 0, 0, dm->width, dm->height);
-  XSetFont(dm->dpy, dm->gc, dm->xfont->fid);
   XSetForeground(dm->dpy, dm->gc, dm->normfg_p);
-  int by = dm->xfont->ascent + 2;
-  XDrawString(dm->dpy, dm->win, dm->gc, PAD, by, prompt, strlen(prompt));
-  XDrawString(dm->dpy, dm->win, dm->gc, PAD + dm->promptw, by, dm->text, strlen(dm->text));
+  int by = dm->xfont->ascent + 1;
+  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD, by, (const FcChar8*)prompt, strlen(prompt));
+  XftDrawStringUtf8(dm->xdraw, &dm->normfg_c, dm->xfont, PAD + dm->promptw, by, (const FcChar8*)dm->text, strlen(dm->text));
   int cx = PAD + dm->promptw + textw(dm, dm->text, dm->cursor);
   XFillRectangle(dm->dpy, dm->win, dm->gc, cx, (dm->BH-dm->fh)/2+1, 2, dm->fh-2);
   int to = PAD + ICON_SIZE + 4;
@@ -98,7 +101,7 @@ static void draw(DMenu *dm) {
     else { XSetForeground(dm->dpy, dm->gc, dm->normfg_p); }
     if (dm->icons && dm->icons[dm->matches[idx]].loaded)
       XCopyArea(dm->dpy, dm->icons[dm->matches[idx]].pixmap, dm->win, dm->gc, 0, 0, ICON_SIZE, ICON_SIZE, PAD, y + (dm->BH - ICON_SIZE) / 2);
-    XDrawString(dm->dpy, dm->win, dm->gc, to, ty, dm->items[dm->matches[idx]], strlen(dm->items[dm->matches[idx]]));
+    XftDrawStringUtf8(dm->xdraw, (idx==dm->sel)?&dm->selfg_c:&dm->normfg_c, dm->xfont, to, ty, (const FcChar8*)dm->items[dm->matches[idx]], strlen(dm->items[dm->matches[idx]]));
   }
 }
 
@@ -163,18 +166,21 @@ done:
 static int init_x11(DMenu *dm) {
   dm->dpy = XOpenDisplay(NULL); if (!dm->dpy) { fprintf(stderr, "sdmened: cannot open display\n"); return -1; }
   dm->scr = DefaultScreen(dm->dpy);
-  dm->xfont = XLoadQueryFont(dm->dpy, fontstr);
-  if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "10x20");
-  if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "9x15");
-  if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "8x13");
-  if (!dm->xfont) dm->xfont = XLoadQueryFont(dm->dpy, "fixed");
-  dm->fw = dm->xfont->max_bounds.width; dm->fh = dm->xfont->ascent + dm->xfont->descent;
+  dm->xfont = XftFontOpenName(dm->dpy, dm->scr, fontstr);
+  if (!dm->xfont) dm->xfont = XftFontOpenName(dm->dpy, dm->scr, "monospace:bold:size=14");
+  if (!dm->xfont) dm->xfont = XftFontOpenName(dm->dpy, dm->scr, "fixed:size=14");
+  if (!dm->xfont) { fprintf(stderr, "sdmened: cannot load font\n"); return -1; }
+  dm->fw = dm->xfont->max_advance_width; dm->fh = dm->xfont->ascent + dm->xfont->descent;
   dm->BH = dm->fh;
   dm->cmap = DefaultColormap(dm->dpy, dm->scr);
-  XColor xc, u; XAllocNamedColor(dm->dpy, dm->cmap, normfg, &xc, &u); dm->normfg_p = xc.pixel;
-  XAllocNamedColor(dm->dpy, dm->cmap, normbg, &xc, &u); dm->normbg_p = xc.pixel;
-  XAllocNamedColor(dm->dpy, dm->cmap, selfg, &xc, &u); dm->selfg_p = xc.pixel;
-  XAllocNamedColor(dm->dpy, dm->cmap, selbg, &xc, &u); dm->selbg_p = xc.pixel;
+  XftColorAllocName(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dm->cmap, normfg, &dm->normfg_c);
+  dm->normfg_p = dm->normfg_c.pixel;
+  XftColorAllocName(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dm->cmap, normbg, &dm->normbg_c);
+  dm->normbg_p = dm->normbg_c.pixel;
+  XftColorAllocName(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dm->cmap, selfg, &dm->selfg_c);
+  dm->selfg_p = dm->selfg_c.pixel;
+  XftColorAllocName(dm->dpy, DefaultVisual(dm->dpy, dm->scr), dm->cmap, selbg, &dm->selbg_c);
+  dm->selbg_p = dm->selbg_c.pixel;
   dm->promptw = textw(dm, prompt, strlen(prompt)); return 0;
 }
 
@@ -245,12 +251,13 @@ static void create_window(DMenu *dm) {
   if (info) XFree(info);
   XSetWindowAttributes wa={0}; wa.override_redirect=1; wa.border_pixel=dm->normfg_p; wa.background_pixel=dm->normbg_p; wa.event_mask=ExposureMask|KeyPressMask;
   dm->win = XCreateWindow(dm->dpy,RootWindow(dm->dpy,dm->scr),x,y,dm->width,dm->height,0,CopyFromParent,InputOutput,CopyFromParent,CWOverrideRedirect|CWBorderPixel|CWBackPixel|CWEventMask,&wa);
-  dm->gc = XCreateGC(dm->dpy,dm->win,0,NULL); XSetFont(dm->dpy,dm->gc,dm->xfont->fid); XMapRaised(dm->dpy,dm->win);
+  dm->gc = XCreateGC(dm->dpy,dm->win,0,NULL); dm->xdraw = XftDrawCreate(dm->dpy,dm->win,DefaultVisual(dm->dpy,dm->scr),dm->cmap); XMapRaised(dm->dpy,dm->win);
 }
 
 static void destroy_window(DMenu *dm) {
   XUnmapWindow(dm->dpy, dm->win);
   XSync(dm->dpy, False);
+  XftDrawDestroy(dm->xdraw);
   XFreeGC(dm->dpy, dm->gc);
   XDestroyWindow(dm->dpy, dm->win);
 }
