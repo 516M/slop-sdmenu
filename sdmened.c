@@ -70,7 +70,20 @@ static int textw(DMenu *dm, const char *s, int n) {
 static int prefixmatch(const char *item, const char *pat) {
   int n = strlen(pat);
   if (n == 0) return 1;
-  return insensitive ? strncasecmp(item, pat, n) == 0 : strncmp(item, pat, n) == 0;
+  if (insensitive) {
+    const char *p = item;
+    while (*p) {
+      if (strncasecmp(p, pat, n) == 0) return 1;
+      p++;
+    }
+    return 0;
+  }
+  const char *p = item;
+  while (*p) {
+    if (strncmp(p, pat, n) == 0) return 1;
+    p++;
+  }
+  return 0;
 }
 
 static long matchtime = 0;
