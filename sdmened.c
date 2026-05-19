@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <sys/wait.h>
 
 #define INP_MAX 512
 #define MAX_ITEMS 4096
@@ -248,21 +249,38 @@ static int icon_load_cached(const char *name, unsigned char **rgb, int *w, int *
   return 1;
 }
 
-// Load icon RGB data from PNG via convert, then cache to disk. Returns 0 on failure.
+// Load icon RGB data from PNG via convert (no shell), then cache to disk. Returns 0 on failure.
 static int icon_load_convert(const char *pngpath, const char *name, unsigned char **rgb, int *w, int *h) {
-  char cmd[4096];
-  snprintf(cmd, sizeof(cmd), "convert '%s' -resize %dx%d ppm:- 2>/dev/null", pngpath, ICON_SIZE, ICON_SIZE);
-  FILE *fp = popen(cmd, "r");
-  if (!fp) return 0;
-  char buf[256];
-  if (!fgets(buf,sizeof(buf),fp)||buf[0]!='P'||buf[1]!='6') { pclose(fp); return 0; }
-  do { if (!fgets(buf,sizeof(buf),fp)) { pclose(fp); return 0; } } while(buf[0]=='#');
+  int pipefd[2];
+  if (pipe(pipefd) < 0) return 0;
+  pid_t pid = fork();
+  if (pid == 0) {
+    close(pipefd[0]);
+    dup2(pipefd[1], 1); close(pipefd[1]);
+    int dn = open("/dev/null", O_RDWR);
+    dup2(dn, 2); if (dn > 2) close(dn);
+    char isize[32]; snprintf(isize, sizeof(isize), "%dx%d", ICON_SIZE, ICON_SIZE);
+    execlp("convert", "convert", pngpath, "-resize", isize, "ppm:-", NULL);
+    _exit(1);
+  }
+  close(pipefd[1]);
+  int ws; waitpid(pid, &ws, 0);
+  if (!WIFEXITED(ws) || WEXITSTATUS(ws) != 0) { close(pipefd[0]); return 0; }
+
+  FILE *fp = fdopen(pipefd[0], "r");
+  if (!fp) { close(pipefd[0]); return 0; }
+  char buf[4096];
+  if (!fgets(buf,sizeof(buf),fp)||buf[0]!='P'||buf[1]!='6') { fclose(fp); return 0; }
+  do { if (!fgets(buf,sizeof(buf),fp)) { fclose(fp); return 0; } } while(buf[0]=='#');
   sscanf(buf,"%d %d",w,h);
-  if (!fgets(buf,sizeof(buf),fp)) { pclose(fp); return 0; }
+  if (!fgets(buf,sizeof(buf),fp)) { fclose(fp); return 0; }
   int rb = (*w)*3;
   *rgb = malloc((*h) * rb);
-  for (int y=0;y<*h;y++) if (fread((*rgb)+y*rb,1,rb,fp)!=(size_t)rb) { free(*rgb); *rgb=NULL; pclose(fp); return 0; }
-  pclose(fp);
+  if (!*rgb) { fclose(fp); return 0; }
+  for (int y=0;y<*h;y++)
+    if (fread((*rgb)+y*rb, 1, rb, fp) != (size_t)rb) { free(*rgb); *rgb=NULL; fclose(fp); return 0; }
+  fclose(fp);
+
   // Write to cache
   char cdir[4096]; icon_cache_dir(cdir,sizeof(cdir)); mkdir(cdir,0755);
   char cpath[4096]; snprintf(cpath,sizeof(cpath),"%s/%s.rgb",cdir,name);
