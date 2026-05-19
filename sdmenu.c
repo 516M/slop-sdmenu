@@ -7,11 +7,52 @@
 #include <sys/poll.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #define SOCK_PATH "/tmp/sdmened.sock"
 #define PID_PATH "/tmp/sdmened.pid"
+#define MAX_ITEMS 4096
 
 static int rofi_mode = 0;
+
+// Read $PATH into an array (used to auto-generate items if daemon is unreachable)
+static char **read_path(int *count) {
+  char *path = getenv("PATH");
+  if (!path) return NULL;
+  char **items = NULL;
+  *count = 0;
+  char buf[4096];
+  strncpy(buf, path, sizeof(buf) - 1);
+  buf[sizeof(buf) - 1] = '\0';
+  char *dir = buf;
+  while (dir && *dir) {
+    char *next = strchr(dir, ':');
+    if (next) *next++ = '\0';
+    DIR *d = opendir(dir);
+    if (d) {
+      struct dirent *e;
+      while ((e = readdir(d)) && *count < MAX_ITEMS) {
+        if (e->d_name[0] == '.') continue;
+        char full[4096];
+        snprintf(full, sizeof(full), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(full, &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR)) {
+          int dup = 0;
+          for (int i = 0; i < *count; i++)
+            if (strcmp(items[i], e->d_name) == 0) { dup = 1; break; }
+          if (!dup) {
+            items = realloc(items, (*count + 1) * sizeof(char *));
+            items[(*count)++] = strdup(e->d_name);
+          }
+        }
+      }
+      closedir(d);
+    }
+    dir = next;
+  }
+  return items;
+}
 static int alive(void) {
   FILE *pf = fopen(PID_PATH, "r");
   if (!pf) return 0;
@@ -49,7 +90,11 @@ int main(int argc, char **argv) {
     }
     if (pid > 0)
       for (int i = 0; i < 200 && !alive(); i++) usleep(10000);
-    if (!alive()) return 1;
+    if (!alive()) {
+      int cnt; char **items = read_path(&cnt);
+      if (items) { for (int i = 0; i < cnt; i++) puts(items[i]); for (int i = 0; i < cnt; i++) free(items[i]); free(items); return 0; }
+      return 1;
+    }
   }
 
   struct sockaddr_un addr;
